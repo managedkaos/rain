@@ -1,0 +1,161 @@
+Description: An EC2 instance running Ubuntu 24.04; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
+
+Parameters:
+  InstanceType:
+    Description: The size to use for the EC2 instance
+    Type: String
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+    Default: t3.medium
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref Role
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow TCP traffic on port 80
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+
+  Server:
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          application_installation:
+            - install_cfn
+            - install_apps
+        install_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+              mode: "000400"
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.Server.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v
+                      --stack ${AWS::StackName}
+                      --resource Server
+                      --configsets application_installation
+                      --region ${AWS::Region}
+              mode: "000400"
+              owner: root
+              group: root
+            /lib/systemd/system/cfn-hup.service:
+              content: |
+                [Unit]
+                Description=cfn-hup daemon
+                After=network.target
+
+                [Service]
+                Type=simple
+                ExecStart=/opt/aws/bin/cfn-hup
+                Restart=always
+
+                [Install]
+                WantedBy=multi-user.target
+              mode: "000644"
+              owner: root
+              group: root
+          commands:
+            00cfn_hup_daemon_reload:
+              command: systemctl daemon-reload
+            01cfn_hup_enable:
+              command: systemctl enable cfn-hup.service
+            02cfn_hup_start:
+              command: systemctl start cfn-hup.service
+        install_apps:
+          packages:
+            apt:
+              git: []
+              openjdk-21-jdk: []
+              python3-pip: []
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      IamInstanceProfile: !Ref Profile
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          exec > >(tee /var/log/user-data.log) 2>&1
+
+          apt-get update -y
+          # Ubuntu 24.04+ (PEP 668): system pip cannot install arbitrary packages; use a venv for cfn-bootstrap.
+          apt-get install -y python3-venv
+
+          CFN_VENV=/opt/aws/cfn-bootstrap
+          python3 -m venv "$CFN_VENV"
+          "$CFN_VENV/bin/pip" install --upgrade pip
+          # setuptools 82+ drops pkg_resources; aws-cfn-bootstrap still imports it — pin setuptools in the same resolve.
+          "$CFN_VENV/bin/pip" install "setuptools>=69,<82" \
+            https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+
+          mkdir -p /opt/aws/bin
+          for f in cfn-init cfn-hup cfn-signal; do
+            ln -sf "$CFN_VENV/bin/$f" /opt/aws/bin/$f
+          done
+
+          /opt/aws/bin/cfn-init -v \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource Server \
+            --configsets application_installation
+
+          /opt/aws/bin/cfn-signal -e $? \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource Server
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Server
+
+Outputs:
+  TerminalURL:
+    Description: Follow this URL to open a terminal on the server
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
