@@ -51,4 +51,20 @@ jenkins:
 	rain deploy jenkins-server.yml jenkins-server-$(NAME) --yes
 	rain deploy jenkins-agent.yml jenkins-agent-$(NAME) --yes --params JenkinsStackName=jenkins-server-$(NAME)
 
+clean:
+	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
+	@echo "# WARNING: This will remove all CloudFormation stacks and associated resources."
+	@echo "# WARNING: This action is irreversible."
+	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
+	@echo
+	@echo "Type CTRL+C to abort."
+	@echo
+	@read -p "Type the current date in YYYY-MM-DD format to confirm: " input_date; \
+	if [ "$$input_date" = "$(shell date +%Y-%m-%d)" ]; then \
+		echo "Date confirmed. Proceeding with removal..."; \
+		echo "Fetching all CloudFormation stacks..."; \
+	else \
+		echo "Date confirmation failed. Aborting..."; \
+	fi
+
 .PHONY: help all lint validate single-lambda ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two
