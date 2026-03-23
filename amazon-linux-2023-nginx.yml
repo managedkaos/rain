@@ -1,0 +1,144 @@
+Description: An EC2 instance running NGINX on Amazon Linux 2023
+
+Parameters:
+  InstanceType:
+    Description: The size to use for the EC2 instance
+    Type: String
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+    Default: t3.medium
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref Role
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow TCP traffic on port 80
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+
+  Server:
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          application_installation:
+            - install_cfn
+            - install_apps
+        install_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+              mode: "000400"
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.Server.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v
+                      --stack ${AWS::StackName}
+                      --resource Server
+                      --configsets application_installation
+                      --region ${AWS::Region}
+              mode: "000400"
+              owner: root
+              group: root
+          services:
+            systemd:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        install_apps:
+          packages:
+            yum:
+              nginx: []
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      IamInstanceProfile: !Ref Profile
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          exec > >(tee /var/log/user-data.log) 2>&1
+
+          dnf update -y aws-cfn-bootstrap
+
+          /opt/aws/bin/cfn-init -v \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource Server \
+            --configsets application_installation
+
+          echo "# $(date) Start and enable NGINX (package default site on port 80)..."
+          systemctl enable nginx
+          systemctl start nginx
+
+          /opt/aws/bin/cfn-signal -e $? \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource Server
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Server
+
+Outputs:
+  TerminalURL:
+    Description: Open a Session Manager terminal on this instance
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
+
+  ServerURL:
+    Description: NGINX default welcome page (HTTP on port 80)
+    Value: !Sub http://${Server.PublicDnsName}/
+
+  SecurityGroupId:
+    Description: Security group for this instance (allows inbound TCP 80)
+    Value: !GetAtt SecurityGroup.GroupId
+    Export:
+      Name: !Sub ${AWS::StackName}-SecurityGroupId

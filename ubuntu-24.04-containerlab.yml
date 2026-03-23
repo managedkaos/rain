@@ -1,4 +1,4 @@
-Description: An EC2 instance running Ubuntu 22.04; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
+Description: An EC2 instance running Ubuntu 24.04; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
 
 Parameters:
   InstanceType:
@@ -111,7 +111,13 @@ Resources:
               python3-pip: []
     Properties:
       InstanceType: !Ref InstanceType
-      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
+      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 50
+            VolumeType: gp3
+            DeleteOnTermination: true
       IamInstanceProfile: !Ref Profile
       SecurityGroups:
         - !Ref SecurityGroup
@@ -124,13 +130,19 @@ Resources:
           exec > >(tee /var/log/user-data.log) 2>&1
 
           apt-get update -y
-          apt-get install -y python3-pip
+          # Ubuntu 24.04+ (PEP 668): system pip cannot install arbitrary packages; use a venv for cfn-bootstrap.
+          apt-get install -y python3-venv
 
-          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+          CFN_VENV=/opt/aws/cfn-bootstrap
+          python3 -m venv "$CFN_VENV"
+          "$CFN_VENV/bin/pip" install --upgrade pip
+          # setuptools 82+ drops pkg_resources; aws-cfn-bootstrap still imports it — pin setuptools in the same resolve.
+          "$CFN_VENV/bin/pip" install "setuptools>=69,<82" \
+            https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
 
           mkdir -p /opt/aws/bin
           for f in cfn-init cfn-hup cfn-signal; do
-            ln -sf /usr/local/bin/$f /opt/aws/bin/$f
+            ln -sf "$CFN_VENV/bin/$f" /opt/aws/bin/$f
           done
 
           /opt/aws/bin/cfn-init -v \
@@ -138,6 +150,8 @@ Resources:
             --region ${AWS::Region} \
             --resource Server \
             --configsets application_installation
+
+          curl -sL https://containerlab.dev/setup | sudo -E bash -s "all"
 
           /opt/aws/bin/cfn-signal -e $? \
             --stack ${AWS::StackName} \

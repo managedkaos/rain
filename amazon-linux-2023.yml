@@ -1,4 +1,4 @@
-Description: An EC2 instance running Ubuntu 24.04; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
+Description: An EC2 instance running Amazon Linux 2023; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
 
 Parameters:
   InstanceType:
@@ -80,38 +80,29 @@ Resources:
               mode: "000400"
               owner: root
               group: root
-            /lib/systemd/system/cfn-hup.service:
-              content: |
-                [Unit]
-                Description=cfn-hup daemon
-                After=network.target
-
-                [Service]
-                Type=simple
-                ExecStart=/opt/aws/bin/cfn-hup
-                Restart=always
-
-                [Install]
-                WantedBy=multi-user.target
-              mode: "000644"
-              owner: root
-              group: root
-          commands:
-            00cfn_hup_daemon_reload:
-              command: systemctl daemon-reload
-            01cfn_hup_enable:
-              command: systemctl enable cfn-hup.service
-            02cfn_hup_start:
-              command: systemctl start cfn-hup.service
+          services:
+            systemd:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
         install_apps:
           packages:
-            apt:
+            yum:
               git: []
-              openjdk-21-jdk: []
+              java-21-amazon-corretto: []
               python3-pip: []
     Properties:
       InstanceType: !Ref InstanceType
-      ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 50
+            VolumeType: gp3
+            DeleteOnTermination: true
       IamInstanceProfile: !Ref Profile
       SecurityGroups:
         - !Ref SecurityGroup
@@ -123,21 +114,7 @@ Resources:
           #!/bin/bash -xe
           exec > >(tee /var/log/user-data.log) 2>&1
 
-          apt-get update -y
-          # Ubuntu 24.04+ (PEP 668): system pip cannot install arbitrary packages; use a venv for cfn-bootstrap.
-          apt-get install -y python3-venv
-
-          CFN_VENV=/opt/aws/cfn-bootstrap
-          python3 -m venv "$CFN_VENV"
-          "$CFN_VENV/bin/pip" install --upgrade pip
-          # setuptools 82+ drops pkg_resources; aws-cfn-bootstrap still imports it — pin setuptools in the same resolve.
-          "$CFN_VENV/bin/pip" install "setuptools>=69,<82" \
-            https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
-
-          mkdir -p /opt/aws/bin
-          for f in cfn-init cfn-hup cfn-signal; do
-            ln -sf "$CFN_VENV/bin/$f" /opt/aws/bin/$f
-          done
+          dnf update -y aws-cfn-bootstrap
 
           /opt/aws/bin/cfn-init -v \
             --stack ${AWS::StackName} \
