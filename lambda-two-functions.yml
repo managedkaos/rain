@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: |
+  GitHub Actions lab stack using OIDC for authentication.
+  Creates two lambda functions (staging and production) and
+  a service account with permission to manage the functions.
+  A GitHub OIDC Provider must already exist in the AWS account
+  for the service account to authenticate from GitHub Actions.
+  See the OIDC cloudformation template in the exercise files
+  if you need to deploy the OIDC provider.
+
+Parameters:
+  GitHubRepository:
+    Description: GitHub repository in GITHUB_OWNER_NAME/GITHUB_REPO_NAME format used to lock the OIDC trust policy.
+    Type: String
+    Default: GITHUB_OWNER_NAME/GITHUB_REPO_NAME
+
+Resources:
+  # ------------------------------------------------------------
+  # Execution Role for Lambda (basic logging)
+  # ------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # ------------------------------------------------------------
+  # Lambda: Staging
+  # ------------------------------------------------------------
+  LambdaFunctionStaging:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: The 'staging' environment for the sample application.
+      FunctionName: !Sub ${AWS::StackName}-staging
+      Runtime: python3.10
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ENVIRONMENT: STAGING
+          VERSION: 0
+          PLATFORM: CloudFormation
+          BUILD_NUMBER: 0
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              import os
+              environment = os.environ['ENVIRONMENT']
+              html_response = f"""
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>Welcome - {environment}</title>
+                  <style>
+                      body {{
+                          font-family: Arial, sans-serif;
+                          line-height: 1.6;
+                          max-width: 800px;
+                          margin: 0 auto;
+                      }}
+                      h1, h2 {{
+                          color: #333;
+                          border-bottom: 1px solid #ccc;
+                      }}
+                      p {{
+                          margin-bottom: 16px;
+                      }}
+                  </style>
+              </head>
+              <body>
+                  <h1>Welcome!</h1>
+                  <h2>This is the <b>{environment}</b> environment.</h2>
+                  <p>
+                      This site is a placeholder for the application you will deploy using <b>GitHub Actions</b> as part of a
+                      Continuous Integration and Continuous Delivery (CI/CD) workflow.
+                  </p>
+
+                  <p>
+                      Use GitHub Actions to automatically build, test,and deploy changes to this Lambda function whenever updates are pushed to the repository.
+                  </p>
+
+                  <p>
+                      Each deployment should update the function code and configuration, allowing you to see changes reflected in the application without manually interacting with the
+                      AWS console.
+                  </p>
+
+                  <p>
+                      This page is your starting point. The real focus is the workflow behind it.  Take the next step and configure GitHub Actions to deploy the real application for this demo.
+                  </p>
+              </body>
+              </html>
+              """
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'text/html'},
+                  'body': html_response
+              }
+
+  LambdaUrlStaging:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref LambdaFunctionStaging
+      AuthType: NONE
+
+  LambdaInvokeFunctionUrlPermissionStaging:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionStaging
+      Principal: "*"
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: NONE
+
+  LambdaInvokeFunctionPermissionStaging:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionStaging
+      Principal: "*"
+      Action: lambda:InvokeFunction
+      InvokedViaFunctionUrl: true
+  # ------------------------------------------------------------
+  # Lambda: Production
+  # ------------------------------------------------------------
+  LambdaFunctionProduction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: The 'production' environment for the sample application.
+      FunctionName: !Sub ${AWS::StackName}-production
+      Runtime: python3.10
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ENVIRONMENT: PRODUCTION
+          VERSION: 0
+          PLATFORM: CloudFormation
+          BUILD_NUMBER: 0
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              import os
+              environment = os.environ['ENVIRONMENT']
+              html_response = f"""
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>Welcome - {environment}</title>
+                  <style>
+                      body {{
+                          font-family: Arial, sans-serif;
+                          line-height: 1.6;
+                          max-width: 800px;
+                          margin: 0 auto;
+                      }}
+                      h1, h2 {{
+                          color: #333;
+                          border-bottom: 1px solid #ccc;
+                      }}
+                      p {{
+                          margin-bottom: 16px;
+                      }}
+                  </style>
+              </head>
+              <body>
+                  <h1>Welcome!</h1>
+                  <h2>This is the <b>{environment}</b> environment.</h2>
+                  <p>
+                      This site is a placeholder for the application you will deploy using <b>GitHub Actions</b> as part of a
+                      Continuous Integration and Continuous Delivery (CI/CD) workflow.
+                  </p>
+
+                  <p>
+                      Use GitHub Actions to automatically build, test,and deploy changes to this Lambda function whenever updates are pushed to the repository.
+                  </p>
+
+                  <p>
+                      Each deployment should update the function code and configuration, allowing you to see changes reflected in the application without manually interacting with the
+                      AWS console.
+                  </p>
+
+                  <p>
+                      This page is your starting point. The real focus is the workflow behind it.  Take the next step and configure GitHub Actions to deploy the real application for this demo.
+                  </p>
+              </body>
+              </html>
+              """
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'text/html'},
+                  'body': html_response
+              }
+
+  LambdaUrlProduction:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref LambdaFunctionProduction
+      AuthType: NONE
+
+  LambdaInvokeFunctionUrlPermissionProduction:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionProduction
+      Principal: "*"
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: NONE
+
+  LambdaInvokeFunctionPermissionProduction:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionProduction
+      Principal: "*"
+      Action: lambda:InvokeFunction
+      InvokedViaFunctionUrl: true
+
+  # ------------------------------------------------------------
+  # Role assumed by GitHub Actions via OIDC, locked to one repo
+  # ------------------------------------------------------------
+  ServiceAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-ServiceAccountRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowServiceAccountAssumeRoleWithOidc
+            Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:*
+
+  # Scoped permissions: update ONLY the two functions created by this stack
+  ServiceAccountRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-ServiceAccount-LambdaUpdate
+      Roles:
+        - !Ref ServiceAccountRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: UpdateOnlyTheseFunctions
+            Effect: Allow
+            Action:
+              - lambda:UpdateFunctionCode
+              - lambda:GetFunctionConfiguration
+              - lambda:UpdateFunctionConfiguration
+              - lambda:GetFunction
+              - lambda:PublishVersion
+              - lambda:CreateAlias
+              - lambda:UpdateAlias
+              - lambda:GetAlias
+              - lambda:ListAliases
+              - lambda:ListVersionsByFunction
+            Resource:
+              - !GetAtt LambdaFunctionProduction.Arn
+              - !GetAtt LambdaFunctionStaging.Arn
+          - Sid: ListFunctionsReadOnly
+            Effect: Allow
+            Action:
+              - lambda:ListFunctions
+            Resource: "*"
+
+Outputs:
+  StagingFunctionName:
+    Description: Use this value for the Staging environment FUNCTION_NAME.
+    Value: !Ref LambdaFunctionStaging
+
+  StagingURL:
+    Description: Use this value for the Staging environment variable URL
+    Value: !GetAtt LambdaUrlStaging.FunctionUrl
+
+  ProductionFunctionName:
+    Description: Use this value for the Production environment variable FUNCTION_NAME
+    Value: !Ref LambdaFunctionProduction
+
+  ProductionURL:
+    Description: Use this value for the Production environment variable URL
+    Value: !GetAtt LambdaUrlProduction.FunctionUrl
+
+  AwsRegion:
+    Description: Use this value for the repository variable AWS_REGION
+    Value: !Ref AWS::Region
+
+  ServiceAccountRoleArn:
+    Description: Use this value for the repository variable AWS_ROLE_ARN
+    Value: !GetAtt ServiceAccountRole.Arn

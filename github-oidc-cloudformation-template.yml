@@ -1,0 +1,19 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: |
+  This stack creates a GitHub Actions OIDC provider for this AWS account.  The template only needs to be deployed once per account.
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+Outputs:
+  GitHubOidcProviderArn:
+    Description: ARN of the GitHub Actions OIDC Provider in this AWS account.
+    Value: !Ref GitHubOidcProvider
