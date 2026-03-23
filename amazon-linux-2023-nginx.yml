@@ -1,3 +1,4 @@
+---
 Description: An EC2 instance running NGINX on Amazon Linux 2023
 
 Parameters:

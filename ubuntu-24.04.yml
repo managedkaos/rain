@@ -1,3 +1,4 @@
+---
 Description: An EC2 instance running Ubuntu 24.04; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
 
 Parameters:

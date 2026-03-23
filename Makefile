@@ -1,21 +1,34 @@
 NAME=$(shell date +%s)
 PREFIX=server-
 TEMPLATES=$(shell ls *.yml)
+# GNU Make uses SHELL=/bin/sh with .SHELLFLAGS=-c (`make -p | grep SHELL`). Loop
+# recipes use `set -e` so the first failing command stops the recipe.
 
 help:
 	echo "hello"
 
 all: lint validate
 
-lint:
-	@for template in $(TEMPLATES); do \
-		echo "Linting $$template..."; \
-		cfn-lint -t $$template; \
+lint: yaml-lint cfn-lint
+
+yaml-lint:
+	@echo && echo "# YAML lint ..."
+	@set -e; for template in $(TEMPLATES); do \
+		echo "Linting $$template"; \
+		yamllint $$template; \
+	done
+
+cfn-lint:
+	@echo && echo "# CloudFormation lint ..."
+	@set -e; for template in $(TEMPLATES); do \
+		echo "Linting $$template"; \
+		cfn-lint --template $$template --non-zero-exit-code error; \
 	done
 
 validate:
-	@for template in $(TEMPLATES); do \
-		echo "Validating $$template..."; \
+	@echo && echo "# Validating CloudFormation templates ..."
+	@set -e; for template in $(TEMPLATES); do \
+		echo "Validating $$template"; \
 		aws cloudformation validate-template --template-body file://$$template > /dev/null; \
 	done
 
