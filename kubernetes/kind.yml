@@ -104,8 +104,6 @@ Resources:
               command: systemctl enable --now docker
             03_add_ec2_user_to_docker:
               command: usermod -aG docker ec2-user
-            04_add_ssm_user_to_docker:
-              command: usermod -aG docker ssm-user
         install_kubectl:
           commands:
             01_download_kubectl:
@@ -130,11 +128,11 @@ Resources:
                 [Service]
                 Type=oneshot
                 RemainAfterExit=yes
-                User=ssm-user
-                Group=ssm-user
+                User=ec2-user
+                Group=ec2-user
                 ExecStart=/usr/local/bin/kind create cluster
                 ExecStop=/usr/local/bin/kind delete cluster
-                WorkingDirectory=/home/ssm-user
+                WorkingDirectory=/home/ec2-user
 
                 [Install]
                 WantedBy=multi-user.target
