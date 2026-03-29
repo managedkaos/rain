@@ -1,6 +1,6 @@
 NAME=$(shell date +%s)
 PREFIX=server-
-TEMPLATES=$(shell ls *.yml)
+TEMPLATES=$(shell find ec2 lambda applications iam kubernetes -name '*.yml' 2>/dev/null)
 # GNU Make uses SHELL=/bin/sh with .SHELLFLAGS=-c (`make -p | grep SHELL`). Loop
 # recipes use `set -e` so the first failing command stops the recipe.
 
@@ -33,23 +33,26 @@ validate:
 	done
 
 lambda-one:
-	rain deploy lambda-one-function.yml lambda-$(NAME) --yes --detach
+	rain deploy lambda/lambda-one-function.yml lambda-$(NAME) --yes --detach
 
 lambda-two:
-	rain deploy lambda-two-functions.yml lambda-$(NAME) --yes --detach
+	rain deploy lambda/lambda-two-functions.yml lambda-$(NAME) --yes --detach
 
 ubuntu24:
-	rain deploy ubuntu-24.04.yml $(PREFIX)$(NAME) --yes --detach
+	rain deploy ec2/ubuntu-24.04.yml $(PREFIX)$(NAME) --yes --detach
 
 amazonlinux2023:
-	rain deploy amazonlinux-2023.yml $(PREFIX)$(NAME) --yes --detach
+	rain deploy ec2/amazon-linux-2023.yml $(PREFIX)$(NAME) --yes --detach
 
 nginx:
-	rain deploy amazon-linux-2023-nginx.yml nginx-$(NAME) --yes --detach
+	rain deploy ec2/amazon-linux-2023-nginx.yml nginx-$(NAME) --yes --detach
 
 jenkins:
-	rain deploy jenkins-server.yml jenkins-server-$(NAME) --yes
-	rain deploy jenkins-agent.yml jenkins-agent-$(NAME) --yes --params JenkinsStackName=jenkins-server-$(NAME)
+	rain deploy applications/jenkins-server.yml jenkins-server-$(NAME) --yes
+	rain deploy applications/jenkins-agent.yml jenkins-agent-$(NAME) --yes --params JenkinsStackName=jenkins-server-$(NAME)
+
+minikube:
+	rain deploy kubernetes/minikube.yml minikube-$(NAME) --yes --detach
 
 clean:
 	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
@@ -67,4 +70,4 @@ clean:
 		echo "Date confirmation failed. Aborting..."; \
 	fi
 
-.PHONY: help all lint validate single-lambda ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two
+.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two minikube
