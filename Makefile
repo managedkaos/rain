@@ -7,6 +7,12 @@ TEMPLATES=$(shell find ec2 lambda applications iam kubernetes -name '*.yml' 2>/d
 help:
 	echo "hello"
 
+get-stacks:
+	rain ls
+
+global-get-stacks:
+	rain ls --all
+
 all: lint validate
 
 lint: yaml-lint cfn-lint

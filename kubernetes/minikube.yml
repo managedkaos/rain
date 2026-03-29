@@ -59,6 +59,7 @@ Resources:
             - install_apps
             - install_docker
             - install_kubectl
+            - install_crictl
             - install_minikube
         install_cfn:
           files:
@@ -95,7 +96,7 @@ Resources:
           packages:
             yum:
               git: []
-              conntrack: []
+              conntrack-tools: []
         install_docker:
           commands:
             01_install_docker:
@@ -104,6 +105,8 @@ Resources:
               command: systemctl enable --now docker
             03_add_ec2_user_to_docker:
               command: usermod -aG docker ec2-user
+            04_add_ssm_user_to_docker:
+              command: usermod -aG docker ssm-user
         install_kubectl:
           commands:
             01_download_kubectl:
@@ -111,6 +114,12 @@ Resources:
               cwd: /tmp
             02_install_kubectl:
               command: install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+        install_crictl:
+          commands:
+            01_download_crictl:
+              command: curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.31.1/crictl-v1.31.1-linux-amd64.tar.gz -o /tmp/crictl.tar.gz
+            02_install_crictl:
+              command: tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz && chmod +x /usr/local/bin/crictl
         install_minikube:
           commands:
             01_download_minikube:
