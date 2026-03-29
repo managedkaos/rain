@@ -7,6 +7,10 @@ TEMPLATES=$(shell find ec2 lambda applications iam kubernetes -name '*.yml' 2>/d
 help:
 	echo "hello"
 
+requirements:
+	pip install --upgrade pip
+	pip install --requirement requirements.txt
+
 get-stacks:
 	rain ls
 
