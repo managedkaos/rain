@@ -60,6 +60,12 @@ jenkins:
 minikube:
 	rain deploy kubernetes/minikube.yml minikube-$(NAME) --yes --detach
 
+kind:
+	rain deploy kubernetes/kind.yml kind-$(NAME) --yes --detach
+
+k3s:
+	rain deploy kubernetes/k3s.yml k3s-$(NAME) --yes --detach
+
 clean:
 	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
 	@echo "# WARNING: This will remove all CloudFormation stacks and associated resources."
@@ -76,4 +82,4 @@ clean:
 		echo "Date confirmation failed. Aborting..."; \
 	fi
 
-.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two minikube
+.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two minikube kind k3s

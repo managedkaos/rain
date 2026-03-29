@@ -50,6 +50,8 @@ rain/
 | Template | Description |
 |---|---|
 | `kubernetes/minikube.yml` | Amazon Linux 2023 with Minikube, kubectl, and Docker |
+| `kubernetes/kind.yml` | Amazon Linux 2023 with Kind (Kubernetes in Docker) and kubectl |
+| `kubernetes/k3s.yml` | Amazon Linux 2023 with k3s lightweight Kubernetes and kubectl |
 
 ## Prerequisites
 
@@ -67,6 +69,8 @@ make ubuntu24
 make nginx
 make jenkins
 make minikube
+make kind
+make k3s
 make lambda-one
 ```
 

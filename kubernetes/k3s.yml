@@ -1,5 +1,5 @@
 ---
-Description: An EC2 instance running Amazon Linux 2023 with Minikube, kubectl, and Docker for Kubernetes exploration; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
+Description: An EC2 instance running Amazon Linux 2023 with k3s lightweight Kubernetes and kubectl for Kubernetes exploration; includes a security group allowing TCP traffic on port 80, and an IAM role with permissions for Systems Manager.
 
 Parameters:
   InstanceType:
@@ -11,7 +11,7 @@ Parameters:
       - t3.xlarge
       - t3.2xlarge
     Default: t3.large
-    ConstraintDescription: Must be a valid EC2 instance type. Minikube requires at least 2 CPUs and 2GB RAM.
+    ConstraintDescription: Must be a valid EC2 instance type.
 
 Resources:
   Role:
@@ -57,11 +57,8 @@ Resources:
           application_installation:
             - install_cfn
             - install_apps
-            - install_docker
-            - install_kubectl
-            - install_crictl
-            - install_minikube
-            - configure_minikube_service
+            - install_k3s
+            - configure_k3s_access
         install_cfn:
           files:
             /etc/cfn/cfn-hup.conf:
@@ -97,66 +94,24 @@ Resources:
           packages:
             yum:
               git: []
-              conntrack-tools: []
-        install_docker:
+        install_k3s:
           commands:
-            01_install_docker:
-              command: dnf install -y docker
-            02_start_docker:
-              command: systemctl enable --now docker
-            03_add_ec2_user_to_docker:
-              command: usermod -aG docker ec2-user
-            04_add_ssm_user_to_docker:
-              command: usermod -aG docker ssm-user
-        install_kubectl:
+            01_install_k3s:
+              command: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -
+        configure_k3s_access:
           commands:
-            01_download_kubectl:
-              command: curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-              cwd: /tmp
-            02_install_kubectl:
-              command: install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-        install_crictl:
-          commands:
-            01_download_crictl:
-              command: curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.31.1/crictl-v1.31.1-linux-amd64.tar.gz -o /tmp/crictl.tar.gz
-            02_install_crictl:
-              command: tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz && chmod +x /usr/local/bin/crictl
-        install_minikube:
-          commands:
-            01_download_minikube:
-              command: curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-              cwd: /tmp
-            02_install_minikube:
-              command: install -o root -g root -m 0755 /tmp/minikube-linux-amd64 /usr/local/bin/minikube
-        configure_minikube_service:
-          files:
-            /etc/systemd/system/minikube.service:
-              content: |
-                [Unit]
-                Description=Minikube local Kubernetes cluster
-                After=docker.service
-
-                [Service]
-                Type=oneshot
-                RemainAfterExit=yes
-                User=ssm-user
-                Group=ssm-user
-                ExecStart=/usr/local/bin/minikube start --driver=docker
-                ExecStop=/usr/local/bin/minikube stop
-                WorkingDirectory=/home/ssm-user
-
-                [Install]
-                WantedBy=multi-user.target
-              mode: "000644"
-              owner: root
-              group: root
-          commands:
-            01_daemon_reload:
-              command: systemctl daemon-reload
-            02_enable_minikube:
-              command: systemctl enable minikube.service
-            03_start_minikube:
-              command: systemctl start minikube.service
+            01_symlink_kubectl:
+              command: ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
+            02_setup_ec2_user_kubeconfig:
+              command: |
+                mkdir -p /home/ec2-user/.kube
+                cp /etc/rancher/k3s/k3s.yaml /home/ec2-user/.kube/config
+                chown -R ec2-user:ec2-user /home/ec2-user/.kube
+            03_setup_ssm_user_kubeconfig:
+              command: |
+                mkdir -p /home/ssm-user/.kube
+                cp /etc/rancher/k3s/k3s.yaml /home/ssm-user/.kube/config
+                chown -R ssm-user:ssm-user /home/ssm-user/.kube
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
@@ -199,9 +154,6 @@ Outputs:
   TerminalURL:
     Description: Follow this URL to open a terminal on the server
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
-  MinikubeStartCommand:
-    Description: Run this command after connecting to start Minikube
-    Value: minikube start --driver=docker
   PublicIP:
     Description: The public IP address of the instance
     Value: !Ref ElasticIP
