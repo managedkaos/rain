@@ -1,0 +1,319 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  This CloudFormation template creates resources for a Python-based API
+  with Amazon Cognito authentication.
+
+  Deployment is a two-step process:
+    1) Deploy the stack with the default AppUrl to create all resources.
+    2) Copy the FunctionURL from the Outputs (remove the trailing slash),
+       set it as the AppUrl parameter, and update the stack.
+
+  The following outputs are created for your reference:
+    1) Region where the stack is deployed.
+    2) The name of the Lambda function.
+    3) The URL for the API.
+    4) The Cognito User Pool ID.
+    5) The Cognito hosted login URL.
+
+
+Parameters:
+  AppUrl:
+    Type: String
+    Description: >
+      The Lambda Function URL without a trailing slash.
+      Deploy the stack once to create the Function URL, then update
+      this parameter with the FunctionURL output (remove trailing slash).
+    Default: "https://example.com"
+
+
+Resources:
+  # ------------------------------------------------------------------ #
+  #  Cognito User Pool, Domain, and App Client
+  # ------------------------------------------------------------------ #
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${AWS::StackName}
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub "${AppUrl}/authorize"
+      LogoutURLs:
+        - !Sub "${AppUrl}/"
+      SupportedIdentityProviders:
+        - COGNITO
+
+  # ------------------------------------------------------------------ #
+  #  Lambda Execution Role
+  # ------------------------------------------------------------------ #
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # ------------------------------------------------------------------ #
+  #  Lambda Function
+  # ------------------------------------------------------------------ #
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Python-based API with Cognito authentication.
+      FunctionName: !Sub ${AWS::StackName}
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 15
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ENVIRONMENT: PRODUCTION
+          VERSION: 0
+          PLATFORM: CloudFormation
+          BUILD_NUMBER: 0
+          CLIENT_ID: !Ref UserPoolClient
+          COGNITO_DOMAIN: !Sub ${AWS::StackName}.auth.${AWS::Region}.amazoncognito.com
+          REDIRECT_URI: !Sub "${AppUrl}/authorize"
+          SECRET_KEY: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              import os, json, base64, hashlib, hmac, secrets, html
+              import urllib.request, urllib.parse
+
+              CLIENT_ID = os.environ['CLIENT_ID']
+              COGNITO_DOMAIN = os.environ['COGNITO_DOMAIN']
+              REDIRECT_URI = os.environ['REDIRECT_URI']
+              SECRET_KEY = os.environ['SECRET_KEY']
+              ENVIRONMENT = os.environ['ENVIRONMENT']
+
+              path = event.get('rawPath', '/')
+              cookies = {}
+              for c in event.get('cookies', []):
+                  if '=' in c:
+                      k, v = c.split('=', 1)
+                      cookies[k.strip()] = v.strip()
+
+              def sign_session(data):
+                  payload = base64.b64encode(json.dumps(data).encode()).decode()
+                  sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+                  return f"{payload}.{sig}"
+
+              def verify_session(value):
+                  try:
+                      payload, sig = value.rsplit('.', 1)
+                      expected = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+                      if hmac.compare_digest(sig, expected):
+                          return json.loads(base64.b64decode(payload))
+                  except Exception:
+                      pass
+                  return None
+
+              user = verify_session(cookies['session']) if 'session' in cookies else None
+
+              # ---- /login ----
+              if path == '/login':
+                  verifier = secrets.token_urlsafe(32)
+                  challenge = base64.urlsafe_b64encode(
+                      hashlib.sha256(verifier.encode()).digest()
+                  ).decode().rstrip('=')
+                  auth_url = f"https://{COGNITO_DOMAIN}/oauth2/authorize?" + urllib.parse.urlencode({
+                      'client_id': CLIENT_ID,
+                      'response_type': 'code',
+                      'scope': 'openid email profile',
+                      'redirect_uri': REDIRECT_URI,
+                      'code_challenge': challenge,
+                      'code_challenge_method': 'S256'
+                  })
+                  return {
+                      'statusCode': 302,
+                      'headers': {'Location': auth_url},
+                      'cookies': [f'pkce={verifier}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=300']
+                  }
+
+              # ---- /authorize (OAuth callback) ----
+              elif path == '/authorize':
+                  params = event.get('queryStringParameters', {}) or {}
+                  code = params.get('code')
+                  if not code:
+                      return {'statusCode': 400, 'headers': {'Content-Type': 'text/html'},
+                              'body': '<p>Missing authorization code. <a href="/">Home</a></p>'}
+                  token_body = urllib.parse.urlencode({
+                      'grant_type': 'authorization_code',
+                      'client_id': CLIENT_ID,
+                      'code': code,
+                      'redirect_uri': REDIRECT_URI,
+                      'code_verifier': cookies.get('pkce', '')
+                  }).encode()
+                  req = urllib.request.Request(
+                      f"https://{COGNITO_DOMAIN}/oauth2/token",
+                      data=token_body,
+                      headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                  )
+                  try:
+                      resp = urllib.request.urlopen(req)
+                      tokens = json.loads(resp.read())
+                  except Exception:
+                      return {'statusCode': 500, 'headers': {'Content-Type': 'text/html'},
+                              'body': '<p>Authentication failed. <a href="/">Try again</a></p>'}
+                  id_payload = tokens['id_token'].split('.')[1]
+                  id_payload += '=' * (-len(id_payload) % 4)
+                  user_info = json.loads(base64.b64decode(id_payload))
+                  session_val = sign_session({'email': user_info.get('email', 'unknown')})
+                  return {
+                      'statusCode': 302,
+                      'headers': {'Location': '/'},
+                      'cookies': [
+                          f'session={session_val}; Path=/; HttpOnly; Secure; SameSite=Lax',
+                          'pkce=; Path=/; HttpOnly; Secure; Max-Age=0'
+                      ]
+                  }
+
+              # ---- /logout ----
+              elif path == '/logout':
+                  base_url = REDIRECT_URI.rsplit('/authorize', 1)[0]
+                  logout_url = f"https://{COGNITO_DOMAIN}/logout?" + urllib.parse.urlencode({
+                      'client_id': CLIENT_ID,
+                      'logout_uri': base_url + '/'
+                  })
+                  return {
+                      'statusCode': 302,
+                      'headers': {'Location': logout_url},
+                      'cookies': ['session=; Path=/; HttpOnly; Secure; Max-Age=0']
+                  }
+
+              # ---- / (home) ----
+              else:
+                  if user:
+                      email = html.escape(user.get('email', 'unknown'))
+                      content = f'Hello, {email}! <a href="/logout">Logout</a>'
+                  else:
+                      content = 'Welcome! Please <a href="/login">Login</a>.'
+                  page = f'''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>Welcome - {ENVIRONMENT}</title>
+              <style>
+                  body {{ font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; }}
+                  h1, h2 {{ color: #333; border-bottom: 1px solid #ccc; }}
+                  p {{ margin-bottom: 16px; }}
+              </style>
+          </head>
+          <body>
+              <h1>{ENVIRONMENT}</h1>
+              <p>{content}</p>
+          </body>
+          </html>'''
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'text/html'},
+                      'body': page
+                  }
+
+  # ------------------------------------------------------------------ #
+  #  Lambda Function URL and Permissions
+  # ------------------------------------------------------------------ #
+  LambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref LambdaFunction
+      AuthType: NONE
+
+  LambdaInvokeFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Principal: "*"
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: NONE
+
+  LambdaInvokeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Principal: "*"
+      Action: lambda:InvokeFunction
+      InvokedViaFunctionUrl: true
+
+
+Outputs:
+  AwsRegion:
+    Description: The AWS_REGION where the stack is deployed.
+    Value: !Sub ${AWS::Region}
+    Export:
+      Name: !Sub ${AWS::StackName}-AwsRegion
+
+  FunctionName:
+    Description: The name of the Lambda function.
+    Value: !Sub ${AWS::StackName}
+    Export:
+      Name: !Sub ${AWS::StackName}-FunctionName
+
+  FunctionURL:
+    Description: The URL for the application.
+    Value:
+      Fn::GetAtt: LambdaUrl.FunctionUrl
+    Export:
+      Name: !Sub ${AWS::StackName}-FunctionURL
+
+  UserPoolId:
+    Description: The Cognito User Pool ID.
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolId
+
+  CognitoLoginUrl:
+    Description: The Cognito hosted UI login URL.
+    Value: !Sub "https://${AWS::StackName}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
+    Export:
+      Name: !Sub ${AWS::StackName}-CognitoLoginUrl
