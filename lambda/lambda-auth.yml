@@ -55,7 +55,7 @@ Resources:
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: !Sub ${AWS::StackName}
+      Domain: !Sub ${AWS::StackName}-${AWS::AccountId}
       UserPoolId: !Ref UserPool
 
   UserPoolClient:
@@ -122,7 +122,7 @@ Resources:
           PLATFORM: CloudFormation
           BUILD_NUMBER: 0
           CLIENT_ID: !Ref UserPoolClient
-          COGNITO_DOMAIN: !Sub ${AWS::StackName}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_DOMAIN: !Sub ${AWS::StackName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
           REDIRECT_URI: !Sub "${AppUrl}/authorize"
           SECRET_KEY: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Code:
@@ -314,6 +314,6 @@ Outputs:
 
   CognitoLoginUrl:
     Description: The Cognito hosted UI login URL.
-    Value: !Sub "https://${AWS::StackName}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
+    Value: !Sub "https://${AWS::StackName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
     Export:
       Name: !Sub ${AWS::StackName}-CognitoLoginUrl
