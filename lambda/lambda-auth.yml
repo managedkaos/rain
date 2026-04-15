@@ -6,9 +6,12 @@ Description: >
   with Amazon Cognito authentication.
 
   Deployment is a two-step process:
-    1) Deploy the stack with the default AppUrl to create all resources.
+    1) Deploy the stack with AppName and the default AppUrl.
     2) Copy the FunctionURL from the Outputs (remove the trailing slash),
        set it as the AppUrl parameter, and update the stack.
+
+  AppName must be 2-13 lowercase alphanumeric characters and hyphens.
+  It is used for resource naming and the Cognito domain prefix.
 
   The following outputs are created for your reference:
     1) Region where the stack is deployed.
@@ -19,6 +22,17 @@ Description: >
 
 
 Parameters:
+  AppName:
+    Type: String
+    Description: >
+      A short name used for the Cognito domain prefix and resource naming.
+      Must be lowercase alphanumeric with hyphens, max 13 characters.
+      The Cognito domain will be: {AppName}-{AccountId}.auth.{Region}.amazoncognito.com
+    AllowedPattern: "^[a-z][a-z0-9-]{0,11}[a-z0-9]$"
+    ConstraintDescription: >
+      Must be 2-13 characters, lowercase letters, numbers, and hyphens only.
+      Must start with a letter and end with a letter or number.
+
   AppUrl:
     Type: String
     Description: >
@@ -35,7 +49,7 @@ Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub ${AWS::StackName}-users
+      UserPoolName: !Sub ${AppName}-users
       AutoVerifiedAttributes:
         - email
       UsernameAttributes:
@@ -55,13 +69,13 @@ Resources:
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: !Sub ${AWS::StackName}-${AWS::AccountId}
+      Domain: !Sub ${AppName}-${AWS::AccountId}
       UserPoolId: !Ref UserPool
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: !Sub ${AWS::StackName}-client
+      ClientName: !Sub ${AppName}-client
       UserPoolId: !Ref UserPool
       GenerateSecret: false
       AllowedOAuthFlows:
@@ -110,7 +124,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Description: Python-based API with Cognito authentication.
-      FunctionName: !Sub ${AWS::StackName}
+      FunctionName: !Sub ${AppName}
       Runtime: python3.12
       Handler: index.handler
       Timeout: 15
@@ -122,7 +136,7 @@ Resources:
           PLATFORM: CloudFormation
           BUILD_NUMBER: 0
           CLIENT_ID: !Ref UserPoolClient
-          COGNITO_DOMAIN: !Sub ${AWS::StackName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_DOMAIN: !Sub ${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
           REDIRECT_URI: !Sub "${AppUrl}/authorize"
           SECRET_KEY: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Code:
@@ -295,7 +309,7 @@ Outputs:
 
   FunctionName:
     Description: The name of the Lambda function.
-    Value: !Sub ${AWS::StackName}
+    Value: !Sub ${AppName}
     Export:
       Name: !Sub ${AWS::StackName}-FunctionName
 
@@ -314,6 +328,6 @@ Outputs:
 
   CognitoLoginUrl:
     Description: The Cognito hosted UI login URL.
-    Value: !Sub "https://${AWS::StackName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
+    Value: !Sub "https://${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
     Export:
       Name: !Sub ${AWS::StackName}-CognitoLoginUrl
