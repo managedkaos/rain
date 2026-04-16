@@ -7,19 +7,11 @@ Description: >
 
   Deployment is a two-step process:
     1) Deploy the stack with AppName and the default AppUrl.
-    2) Copy the FunctionURL from the Outputs (remove the trailing slash),
-       set it as the AppUrl parameter, and update the stack.
+    2) Copy the FunctionURL from the Outputs and set it as the AppUrl
+       parameter (trailing slash optional; the template normalizes the host),
+       then update the stack.
 
   AppName must be 2-13 lowercase alphanumeric characters and hyphens.
-  It is used for resource naming and the Cognito domain prefix.
-
-  The following outputs are created for your reference:
-    1) Region where the stack is deployed.
-    2) The name of the Lambda function.
-    3) The URL for the API.
-    4) The Cognito User Pool ID.
-    5) The Cognito hosted login URL.
-
 
 Parameters:
   AppName:
@@ -36,9 +28,9 @@ Parameters:
   AppUrl:
     Type: String
     Description: >
-      The Lambda Function URL without a trailing slash.
-      Deploy the stack once to create the Function URL, then update
-      this parameter with the FunctionURL output (remove trailing slash).
+      The Lambda Function URL (scheme + host only, no path). A trailing
+      slash is optional; the template normalizes host so callback URLs are
+      https://host/authorize (never //authorize).
     Default: "https://example.com"
 
 
@@ -86,9 +78,13 @@ Resources:
         - email
         - profile
       CallbackURLs:
-        - !Sub "${AppUrl}/authorize"
+        - !Sub
+          - "https://${Host}/authorize"
+          - Host: !Select [0, !Split ['/', !Select [1, !Split ['//', !Ref AppUrl]]]]
       LogoutURLs:
-        - !Sub "${AppUrl}/"
+        - !Sub
+          - "https://${Host}/"
+          - Host: !Select [0, !Split ['/', !Select [1, !Split ['//', !Ref AppUrl]]]]
       SupportedIdentityProviders:
         - COGNITO
 
@@ -137,7 +133,9 @@ Resources:
           BUILD_NUMBER: 0
           CLIENT_ID: !Ref UserPoolClient
           COGNITO_DOMAIN: !Sub ${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
-          REDIRECT_URI: !Sub "${AppUrl}/authorize"
+          REDIRECT_URI: !Sub
+            - "https://${Host}/authorize"
+            - Host: !Select [0, !Split ['/', !Select [1, !Split ['//', !Ref AppUrl]]]]
           SECRET_KEY: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
       Code:
         ZipFile: |
@@ -151,15 +149,42 @@ Resources:
               SECRET_KEY = os.environ['SECRET_KEY']
               ENVIRONMENT = os.environ['ENVIRONMENT']
 
-              path = event.get('rawPath', '/')
+              # Collapse duplicate slashes in path
+              _raw = event.get('rawPath', '/') or '/'
+              _segs = [s for s in _raw.split('/') if s]
+              path = '/' + '/'.join(_segs) if _segs else '/'
+
+              def parse_cookie_pairs(s):
+                  out = {}
+                  if not s:
+                      return out
+                  for part in s.split(';'):
+                      part = part.strip()
+                      if '=' in part:
+                          k, v = part.split('=', 1)
+                          out[k.strip()] = v.strip()
+                  return out
+
               cookies = {}
               for c in event.get('cookies', []):
                   if '=' in c:
                       k, v = c.split('=', 1)
                       cookies[k.strip()] = v.strip()
+              hdrs = event.get('headers') or {}
+              cookie_hdr = hdrs.get('cookie') or hdrs.get('Cookie')
+              if cookie_hdr:
+                  cookies.update(parse_cookie_pairs(cookie_hdr))
+
+              def b64url_encode(b):
+                  return base64.urlsafe_b64encode(b).decode().rstrip('=')
+
+              def b64url_decode(s):
+                  pad = '=' * (-len(s) % 4)
+                  return base64.urlsafe_b64decode(s + pad)
 
               def sign_session(data):
-                  payload = base64.b64encode(json.dumps(data).encode()).decode()
+                  raw = json.dumps(data, separators=(',', ':'), sort_keys=True).encode()
+                  payload = b64url_encode(raw)
                   sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
                   return f"{payload}.{sig}"
 
@@ -167,8 +192,9 @@ Resources:
                   try:
                       payload, sig = value.rsplit('.', 1)
                       expected = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
-                      if hmac.compare_digest(sig, expected):
-                          return json.loads(base64.b64decode(payload))
+                      if not hmac.compare_digest(sig, expected):
+                          return None
+                      return json.loads(b64url_decode(payload))
                   except Exception:
                       pass
                   return None
@@ -235,10 +261,11 @@ Resources:
 
               # ---- /logout ----
               elif path == '/logout':
-                  base_url = REDIRECT_URI.rsplit('/authorize', 1)[0]
+                  _pu = urllib.parse.urlparse(REDIRECT_URI)
+                  logout_uri = f"{_pu.scheme}://{_pu.netloc}/"
                   logout_url = f"https://{COGNITO_DOMAIN}/logout?" + urllib.parse.urlencode({
                       'client_id': CLIENT_ID,
-                      'logout_uri': base_url + '/'
+                      'logout_uri': logout_uri
                   })
                   return {
                       'statusCode': 302,
@@ -334,6 +361,12 @@ Outputs:
 
   CognitoLoginUrl:
     Description: The Cognito hosted UI login URL.
-    Value: !Sub "https://${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${AppUrl}/authorize"
+    Value: !Sub
+      - "https://${Domain}/login?client_id=${ClientId}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}"
+      - Domain: !Sub "${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com"
+        ClientId: !Ref UserPoolClient
+        RedirectUri: !Sub
+          - "https://${Host}/authorize"
+          - Host: !Select [0, !Split ['/', !Select [1, !Split ['//', !Ref AppUrl]]]]
     Export:
       Name: !Sub ${AWS::StackName}-CognitoLoginUrl
