@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rain help *)",
+      "Bash(rain deploy *)",
+      "Bash(rain cat *)"
+    ]
+  }
+}

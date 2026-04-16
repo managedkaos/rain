@@ -11,11 +11,11 @@ requirements:
 	pip install --upgrade pip
 	pip install --requirement requirements.txt
 
-get-stacks:
-	rain ls
+ls:
+	@rain ls
 
-global-get-stacks:
-	rain ls --all
+global-ls:
+	@rain ls --all
 
 all: lint validate
 
@@ -70,20 +70,48 @@ kind:
 k3s:
 	rain deploy kubernetes/k3s.yml k3s-$(NAME) --yes --detach
 
+name-length-check:
+	@if [ $$(printf '%s' '$(NAME)' | wc -c) -gt 13 ]; then \
+		echo "ERROR: NAME must be 13 characters or fewer. Current length = $$(printf '%s' '$(NAME)' | wc -c | tr -d ' '): '$(NAME)'"; \
+		printf '\nPlease set NAME to a shorter value (e.g., NAME=shortname) and try again.\n\n'; \
+		exit 1; \
+	fi
+
+lambda-auth-1: name-length-check
+	rain deploy lambda/lambda-auth.yml lambda-auth-$(NAME) --yes --params AppName=$(NAME)
+
+lambda-auth-2: name-length-check
+	$(eval APP_URL=$(shell aws cloudformation describe-stacks \
+		--stack-name lambda-auth-$(NAME) \
+		--query "Stacks[0].Outputs[?OutputKey=='FunctionURL'].OutputValue" \
+		--output text | sed 's:/$::'))
+	rain deploy lambda/lambda-auth.yml lambda-auth-$(NAME) --yes --params AppName=$(NAME),AppUrl=$(APP_URL)
+
 clean:
-	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
-	@echo "# WARNING: This will remove all CloudFormation stacks and associated resources."
-	@echo "# WARNING: This action is irreversible."
-	@echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"
-	@echo
-	@echo "Type CTRL+C to abort."
-	@echo
-	@read -p "Type the current date in YYYY-MM-DD format to confirm: " input_date; \
-	if [ "$$input_date" = "$(shell date +%Y-%m-%d)" ]; then \
+	@stacks=$$(rain ls | awk '{print $$1}' | grep -v aws-sam-cli-managed-default | grep -v CloudFormation | sed -e 's/://'); \
+	if [ -z "$$stacks" ]; then \
+		echo "No stacks to remove."; \
+		exit 0; \
+	fi; \
+	echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"; \
+	echo "# WARNING: This will remove the following CloudFormation stacks and their associated resources:"; \
+	echo "#"; \
+	for s in $$stacks; do echo "#   $$s"; done; \
+	echo "#"; \
+	echo "# This action is irreversible."; \
+	echo "#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!#"; \
+	echo; \
+	echo "Type CTRL+C to abort."; \
+	echo; \
+	read -p "Type the current date in YYYY-MM-DD format to confirm: " input_date; \
+	if [ "$$input_date" = "$$(date +%Y-%m-%d)" ]; then \
 		echo "Date confirmed. Proceeding with removal..."; \
-		echo "Fetching all CloudFormation stacks..."; \
+		for stack in $$stacks; do \
+			echo "Removing $$stack ..."; \
+			rain rm $$stack --yes --detach; \
+		done; \
 	else \
 		echo "Date confirmation failed. Aborting..."; \
 	fi
 
-.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two minikube kind k3s
+.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two name-length-check lambda-auth-1 lambda-auth-2 minikube kind k3s
