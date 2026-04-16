@@ -1,6 +1,6 @@
 NAME=$(shell date +%s)
 PREFIX=server-
-TEMPLATES=$(shell find ec2 lambda applications iam kubernetes -name '*.yml' 2>/dev/null)
+TEMPLATES=$(shell find ec2 lambda applications iam kubernetes cognito -name '*.yml' 2>/dev/null)
 # GNU Make uses SHELL=/bin/sh with .SHELLFLAGS=-c (`make -p | grep SHELL`). Loop
 # recipes use `set -e` so the first failing command stops the recipe.
 
@@ -77,15 +77,8 @@ name-length-check:
 		exit 1; \
 	fi
 
-lambda-auth-1: name-length-check
-	rain deploy lambda/lambda-auth.yml lambda-auth-$(NAME) --yes --params AppName=$(NAME)
-
-lambda-auth-2: name-length-check
-	$(eval APP_URL=$(shell aws cloudformation describe-stacks \
-		--stack-name lambda-auth-$(NAME) \
-		--query "Stacks[0].Outputs[?OutputKey=='FunctionURL'].OutputValue" \
-		--output text | sed 's:/$::'))
-	rain deploy lambda/lambda-auth.yml lambda-auth-$(NAME) --yes --params AppName=$(NAME),AppUrl=$(APP_URL)
+cognito: name-length-check
+	cognito/deploy.sh $(NAME)
 
 clean:
 	@stacks=$$(rain ls | awk '{print $$1}' | grep -v aws-sam-cli-managed-default | grep -v CloudFormation | sed -e 's/://'); \
@@ -114,4 +107,4 @@ clean:
 		echo "Date confirmation failed. Aborting..."; \
 	fi
 
-.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two name-length-check lambda-auth-1 lambda-auth-2 minikube kind k3s
+.PHONY: help all lint validate ubuntu24 amazonlinux2023 nginx jenkins lambda-one lambda-two name-length-check cognito minikube kind k3s
