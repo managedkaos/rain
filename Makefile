@@ -72,13 +72,13 @@ k3s:
 
 name-length-check:
 	@if [ $$(printf '%s' '$(NAME)' | wc -c) -gt 13 ]; then \
-		echo "ERROR: NAME must be 13 characters or fewer. Current length = $$(printf '%s' '$(NAME)' | wc -c | tr -d ' '): '$(NAME)'"; \
+		echo "ERROR: NAME must be 13 characters or less. Length = $$(printf '%s' '$(NAME)' | wc -c | tr -d ' '): '$(NAME)'"; \
 		printf '\nPlease set NAME to a shorter value (e.g., NAME=shortname) and try again.\n\n'; \
 		exit 1; \
 	fi
 
 cognito: name-length-check
-	cognito/deploy.sh $(NAME)
+	@cognito/deploy.sh $(NAME)
 
 clean:
 	@stacks=$$(rain ls | awk '{print $$1}' | grep -v aws-sam-cli-managed-default | grep -v CloudFormation | sed -e 's/://'); \

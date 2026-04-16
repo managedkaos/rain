@@ -256,7 +256,7 @@ Resources:
                   page = f'''<!DOCTYPE html>
           <html>
           <head>
-              <title>Welcome - {ENVIRONMENT}</title>
+              <title>Cognito Demo Site</title>
               <style>
                   body {{ font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; }}
                   h1, h2 {{ color: #333; border-bottom: 1px solid #ccc; }}
@@ -264,7 +264,7 @@ Resources:
               </style>
           </head>
           <body>
-              <h1>{ENVIRONMENT}</h1>
+              <h1>Home</h1>
               <p>{content}</p>
           </body>
           </html>'''
@@ -301,6 +301,12 @@ Resources:
 
 
 Outputs:
+  StackName:
+    Description: The name of the stack.
+    Value: !Sub ${AWS::StackName}
+    Export:
+      Name: !Sub ${AWS::StackName}-StackName
+
   AwsRegion:
     Description: The AWS_REGION where the stack is deployed.
     Value: !Sub ${AWS::Region}
