@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>The Sample Application - {environment}</title>
+        <title>Cognito Demo Site - {environment}</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -17,17 +17,6 @@
 
             p {{
                 margin-bottom: 16px;
-            }}
-
-            button {{
-                background-color: green;
-                color: white;
-                font-weight: bold;
-                padding: 10px 20px;
-                font-size: 16px;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
             }}
 
             table {{
@@ -49,7 +38,7 @@
 
             td:first-child, th:first-child {{
                 font-weight: bold;
-                background-color: #26A69A ;
+                background-color: #26A69A;
             }}
 
             td b {{
@@ -58,7 +47,8 @@
         </style>
     </head>
     <body>
-        <h1>The Sample Application</h1>
+        <h1>Home</h1>
+        <p>{content}</p>
         <table>
           <tr>
             <td>Environment</td>
@@ -77,17 +67,5 @@
             <td><b>{build_number}</b></td>
           </tr>
         </table>
-
-        <h2>GET /</h2>
-        <p>Returns the documentation page for the application.</p>
-        <p><button onclick="window.open('/')">Try it</button></p>
-
-        <h2>GET /data</h2>
-        <p>Returns all data in JSON format.</p>
-        <p><button onclick="window.open('/data')">Try it</button></p>
-
-        <h2>GET /{{id}}</h2>
-        <p>Returns a specific item by its ID in JSON format.</p>
-        <p><button onclick="window.open('/1')">Try it</button></p>
     </body>
 </html>

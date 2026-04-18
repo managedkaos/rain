@@ -1,3 +1,6 @@
+help:
+	@echo "Usage: make cognito NAME=<name> [TEMPLATE=<template>]"
+
 name-length-check:
 	@if [ $$(printf '%s' '$(NAME)' | wc -c) -gt 13 ]; then \
 		echo "ERROR: NAME must be 13 characters or less. Length = $$(printf '%s' '$(NAME)' | wc -c | tr -d ' '): '$(NAME)'"; \
@@ -6,4 +9,6 @@ name-length-check:
 	fi
 
 cognito: name-length-check
-	@cognito/deploy.sh $(NAME)
+	@./deploy.sh $(TEMPLATE) $(NAME)
+
+.PHONY: cognito name-length-check

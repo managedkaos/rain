@@ -78,7 +78,7 @@ name-length-check:
 	fi
 
 cognito: name-length-check
-	@cognito/deploy.sh $(NAME)
+	@cognito/deploy.sh $(STACK) $(NAME)
 
 clean:
 	@stacks=$$(rain ls | awk '{print $$1}' | grep -v aws-sam-cli-managed-default | grep -v CloudFormation | sed -e 's/://'); \
