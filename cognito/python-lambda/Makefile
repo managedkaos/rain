@@ -50,7 +50,7 @@ build:
 
 deploy:
 	aws sts get-caller-identity
-	./deploy.sh $(NAME) $(VERSION) $(BUILD_NUMBER)
+	./deploy-function.sh $(NAME) $(VERSION) $(BUILD_NUMBER)
 
 clean:
 	rm -vf lambda.zip

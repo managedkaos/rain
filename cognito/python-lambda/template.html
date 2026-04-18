@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Cognito Demo Site - {environment}</title>
+        <title>Cognito Demo Site</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -49,23 +49,6 @@
     <body>
         <h1>Home</h1>
         <p>{content}</p>
-        <table>
-          <tr>
-            <td>Environment</td>
-            <td><b>{environment}</b></td>
-          </tr>
-          <tr>
-            <td>Version</td>
-            <td><b>{version}</b></td>
-          </tr>
-          <tr>
-            <td>Platform</td>
-            <td><b>{platform}</b></td>
-          </tr>
-          <tr>
-            <td>Build #</td>
-            <td><b>{build_number}</b></td>
-          </tr>
-        </table>
+        {info_table}
     </body>
 </html>

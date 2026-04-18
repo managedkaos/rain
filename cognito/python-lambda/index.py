@@ -169,15 +169,21 @@ def handler(event, context):
     if user:
         email = html.escape(user.get("email", "unknown"))
         content = f'Hello, {email}! <a href="/logout">Logout</a>'
+        info_table = (
+            "<table>"
+            f"<tr><td>Environment</td><td><b>{ENVIRONMENT}</b></td></tr>"
+            f"<tr><td>Version</td><td><b>{VERSION}</b></td></tr>"
+            f"<tr><td>Platform</td><td><b>{PLATFORM}</b></td></tr>"
+            f"<tr><td>Build #</td><td><b>{BUILD_NUMBER}</b></td></tr>"
+            "</table>"
+        )
     else:
         content = 'Welcome! Please <a href="/login">Login</a>.'
+        info_table = ""
 
     page = TEMPLATE.format(
         content=content,
-        environment=ENVIRONMENT,
-        version=VERSION,
-        platform=PLATFORM,
-        build_number=BUILD_NUMBER,
+        info_table=info_table,
     )
     return {
         "statusCode": 200,
