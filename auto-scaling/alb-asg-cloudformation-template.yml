@@ -208,6 +208,8 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MetricsCollection:
+        - Granularity: "1Minute"
       TargetGroupARNs:
         - !Ref ApplicationTargetGroup
       VPCZoneIdentifier: !Ref AsgSubnetIds
