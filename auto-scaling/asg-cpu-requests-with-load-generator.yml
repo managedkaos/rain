@@ -14,6 +14,7 @@ Resources:
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
 
   Profile:
     Type: AWS::IAM::InstanceProfile
@@ -304,7 +305,29 @@ Resources:
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
 
-            dnf install stress-ng -y
+            dnf install stress-ng amazon-cloudwatch-agent -y
+
+            mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
+            {
+              "metrics": {
+                "metrics_collected": {
+                  "cpu": {
+                    "measurement": ["cpu_usage_idle", "cpu_usage_user", "cpu_usage_system"],
+                    "metrics_collection_interval": 60,
+                    "totalcpu": true
+                  },
+                  "mem": {
+                    "measurement": ["mem_used_percent"],
+                    "metrics_collection_interval": 60
+                  }
+                }
+              }
+            }
+            CWAGENT
+
+            systemctl enable amazon-cloudwatch-agent
+            systemctl start amazon-cloudwatch-agent
 
             app_dir=/opt/compute-signals-demo
             mkdir -p "$app_dir"
@@ -506,8 +529,6 @@ Resources:
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
-
-            dnf install stress-ng -y
 
             dnf install -y httpd-tools
 

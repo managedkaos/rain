@@ -16,7 +16,7 @@ aws ssm send-command \
   --instance-ids $INSTANCE_IDS \
   --parameters 'commands=[
     "echo Starting background stress test...",
-    "nohup stress-ng --cpu 2 --vm 1 --vm-bytes 512M --timeout 300s --metrics-brief > /tmp/stress-ng.log 2>&1 &",
+    "nohup stress-ng --cpu 0 -l 85 --vm 1 --timeout 2400s --metrics-brief > /tmp/stress-ng.log 2>&1 &",
     "echo stress-ng started in background. Check /tmp/stress-ng.log for output."
   ]' \
   --max-errors "1" \
