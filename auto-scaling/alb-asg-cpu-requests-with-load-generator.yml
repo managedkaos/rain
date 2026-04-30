@@ -1,0 +1,482 @@
+---
+Description: Self-contained VPC, public ALB, and private Auto Scaling Group with request-based and CPU-based scaling on Amazon Linux 2023
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-a
+      VpcId: !Ref Vpc
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-b
+      VpcId: !Ref Vpc
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.10.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-a
+      VpcId: !Ref Vpc
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-b
+      VpcId: !Ref Vpc
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-rt
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-rt
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetA
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetB
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the internet to the ALB
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the ALB to the Auto Scaling Group instances
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  LoadGeneratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access to the Apache Bench load generator and outbound access to the ALB
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Type: application
+
+  ApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref Vpc
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApplicationTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+        InstanceType: t3.medium
+        MetadataOptions:
+          HttpTokens: required
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: false
+            DeviceIndex: 0
+            Groups:
+              - !Ref InstanceSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${AWS::StackName}-asg-instance
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            app_dir=/opt/compute-signals-demo
+            mkdir -p "$app_dir"
+
+            token=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            instance_id=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            availability_zone=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            cat > "$app_dir/index.html" <<HTML
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <title>Scaling AWS Compute Demo</title>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  margin: 2rem;
+                  background: #f7f9fc;
+                  color: #1f2937;
+                }
+                .card {
+                  max-width: 720px;
+                  background: #ffffff;
+                  padding: 2rem;
+                  border-radius: 12px;
+                  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+                }
+                code {
+                  background: #eef2ff;
+                  padding: 0.2rem 0.4rem;
+                  border-radius: 6px;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>Scaling AWS Compute Demo</h1>
+                <p>This page is being served by an EC2 instance in an Auto Scaling Group behind an Application Load Balancer.</p>
+                <p><strong>Instance ID:</strong> <code>$instance_id</code></p>
+                <p><strong>Availability Zone:</strong> <code>$availability_zone</code></p>
+                <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
+              </div>
+            </body>
+            </html>
+            HTML
+
+            cat > /etc/systemd/system/compute-signals-demo.service <<'SERVICE'
+            [Unit]
+            Description=Simple HTTP server for the Scaling AWS Compute demo
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/compute-signals-demo
+            ExecStart=/usr/bin/python3 -m http.server 80 --directory /opt/compute-signals-demo
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable --now compute-signals-demo.service
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 2
+      MinSize: 2
+      MaxSize: 4
+      HealthCheckGracePeriod: 60
+      HealthCheckType: ELB
+      DefaultInstanceWarmup: 30
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MetricsCollection:
+        - Granularity: "1Minute"
+      TargetGroupARNs:
+        - !Ref ApplicationTargetGroup
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-asg-instance
+          PropagateAtLaunch: true
+
+  CpuTargetTrackingScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0
+
+  RequestRateScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      EstimatedInstanceWarmup: 30
+      MetricAggregationType: Average
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          MetricIntervalUpperBound: 500
+          ScalingAdjustment: 1
+        - MetricIntervalLowerBound: 500
+          ScalingAdjustment: 2
+
+  RequestRateScaleInPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      EstimatedInstanceWarmup: 30
+      MetricAggregationType: Average
+      StepAdjustments:
+        - MetricIntervalUpperBound: 0
+          ScalingAdjustment: -1
+
+  HighRequestCountPerTargetAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale out when request count per target stays high
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCountPerTarget
+      Statistic: Sum
+      Period: 30
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref RequestRateScaleOutPolicy
+
+  LowRequestCountPerTargetAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale in when request count per target stays low
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCountPerTarget
+      Statistic: Sum
+      Period: 30
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 5
+      Threshold: 200
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref RequestRateScaleInPolicy
+
+  LoadGeneratorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      InstanceType: t3.small
+      MetadataOptions:
+        HttpTokens: required
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref LoadGeneratorSecurityGroup
+          SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-load-generator
+      UserData:
+        !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install -y httpd-tools
+
+            cat > /usr/local/bin/run-ab-load.sh <<'SCRIPT'
+            #!/bin/bash
+            set -euo pipefail
+            while true; do
+              ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/
+              sleep 240
+            done
+            SCRIPT
+
+            chmod +x /usr/local/bin/run-ab-load.sh
+
+            cat > /etc/systemd/system/ab-load.service <<'SERVICE'
+            [Unit]
+            Description=Continuous Apache Bench load generator against the ALB
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/run-ab-load.sh
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable ab-load.service
+            systemctl start ab-load.service
+
+Outputs:
+  AlbURL:
+    Description: Application Load Balancer URL
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
+
+  VpcId:
+    Description: VPC created for this stack
+    Value: !Ref Vpc
+
+  PublicSubnetIds:
+    Description: Public subnets used by the internet-facing ALB
+    Value: !Join
+      - ','
+      - - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+
+  PrivateSubnetIds:
+    Description: Private subnets used by the Auto Scaling Group
+    Value: !Join
+      - ','
+      - - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  LoadBalancerSecurityGroupId:
+    Description: Security group for the public ALB
+    Value: !GetAtt LoadBalancerSecurityGroup.GroupId
+
+  InstanceSecurityGroupId:
+    Description: Security group for the Auto Scaling Group instances
+    Value: !GetAtt InstanceSecurityGroup.GroupId
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group name
+    Value: !Ref AutoScalingGroup
+
+  LoadGeneratorPublicIp:
+    Description: Public IP address of the Apache Bench load generator instance
+    Value: !GetAtt LoadGeneratorInstance.PublicIp
+
+  LoadGeneratorAbCommand:
+    Description: Continuous Apache Bench command for the load generator
+    Value: !Sub while true; do ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/; sleep 120; done
