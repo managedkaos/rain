@@ -218,6 +218,8 @@ Resources:
             Tags:
               - Key: Name
                 Value: !Sub ${AWS::StackName}-asg-instance
+              - Key: asg-instance
+                Value: true
         UserData: !Base64
           Fn::Sub: |
             #!/bin/bash -xe
@@ -316,6 +318,12 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-asg-instance
+          PropagateAtLaunch: true
+        - Key: asg-webserver
+          Value: true
+          PropagateAtLaunch: true
+        - Key: role
+          Value: webserver
           PropagateAtLaunch: true
 
   RequestRateScaleOutPolicy:
