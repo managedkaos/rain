@@ -22,15 +22,15 @@ Parameters:
 
   CpuTargetValue:
     Type: Number
-    Default: 70
+    Default: 50
     MinValue: 10
     MaxValue: 90
     Description: Target average CPU utilization percentage for target tracking scaling
 
   RequestCountTarget:
     Type: Number
-    Default: 75
-    MinValue: 1
+    Default: 100
+    MinValue: 100
     Description: Target ALB requests per target for target tracking scaling
 
   HealthCheckGracePeriod:
@@ -180,6 +180,72 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable
       SubnetId: !Ref PrivateSubnetB
 
+  SsmVpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS from private subnets to SSM interface VPC endpoints
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt PrivateSubnetA.CidrBlock
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt PrivateSubnetB.CidrBlock
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  VpcEndpointSsm:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SsmVpcEndpointSecurityGroup
+
+  VpcEndpointSsmMessages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SsmVpcEndpointSecurityGroup
+
+  VpcEndpointEc2Messages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref SsmVpcEndpointSecurityGroup
+
+  VpcEndpointS3Gateway:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -205,13 +271,17 @@ Resources:
           ToPort: 80
           SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
       SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref SsmVpcEndpointSecurityGroup
         - CidrIp: 0.0.0.0/0
           IpProtocol: -1
 
   LoadGeneratorSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow SSH access to the Apache Bench load generator and outbound access to the ALB
+      GroupDescription: Allow outbound access to the ALB
       VpcId: !Ref Vpc
       SecurityGroupEgress:
         - CidrIp: 0.0.0.0/0
@@ -270,9 +340,12 @@ Resources:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: !Sub ${AWS::StackName}-asg-instance
-              - Key: asg-instance
+                Value: !Sub ${AWS::StackName}-asg-webserver
+              - Key: asg-webserver
                 Value: true
+              - Key: role
+                Value: webserver
+
         UserData: !Base64
           Fn::Sub: |
             #!/bin/bash -xe
@@ -379,6 +452,7 @@ Resources:
           Value: webserver
           PropagateAtLaunch: true
 
+
   CpuTargetTrackingScalingPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
@@ -422,7 +496,6 @@ Resources:
           Value: !Sub ${AWS::StackName}-load-generator
         - Key: role
           Value: load-generator
-          PropagateAtLaunch: true
       UserData:
         !Base64
           Fn::Sub: |
