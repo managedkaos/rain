@@ -2,6 +2,25 @@
 Description: Self-contained VPC, public ALB, and private Auto Scaling Group running a simple web app on Amazon Linux 2023
 
 Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref Role]
+
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -185,6 +204,8 @@ Resources:
       LaunchTemplateData:
         ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
         InstanceType: t3.medium
+        IamInstanceProfile:
+          Name: !Ref Profile
         MetadataOptions:
           HttpTokens: required
         NetworkInterfaces:
@@ -201,6 +222,8 @@ Resources:
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng -y
 
             app_dir=/opt/compute-signals-demo
             mkdir -p "$app_dir"

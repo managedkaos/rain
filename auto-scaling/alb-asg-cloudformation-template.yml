@@ -45,6 +45,25 @@ Parameters:
     MinValue: 1
 
 Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref Role]
+
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -111,6 +130,8 @@ Resources:
       LaunchTemplateData:
         ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
         InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name: !Ref Profile
         MetadataOptions:
           HttpTokens: required
         NetworkInterfaces:
@@ -127,6 +148,8 @@ Resources:
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng -y
 
             app_dir=/opt/compute-signals-demo
             mkdir -p "$app_dir"

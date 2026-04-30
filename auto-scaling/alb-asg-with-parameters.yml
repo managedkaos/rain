@@ -33,18 +33,6 @@ Parameters:
     MinValue: 1
     Description: Target ALB requests per target for target tracking scaling
 
-  ScaleOutCooldown:
-    Type: Number
-    Default: 60
-    MinValue: 0
-    Description: Cooldown in seconds after scale-out
-
-  ScaleInCooldown:
-    Type: Number
-    Default: 180
-    MinValue: 0
-    Description: Cooldown in seconds after scale-in
-
   HealthCheckGracePeriod:
     Type: Number
     Default: 60
@@ -58,6 +46,25 @@ Parameters:
     Description: Default instance warmup in seconds for scaling metrics
 
 Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref Role]
+
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -250,6 +257,8 @@ Resources:
       LaunchTemplateData:
         ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
         InstanceType: t3.medium
+        IamInstanceProfile:
+          Name: !Ref Profile
         MetadataOptions:
           HttpTokens: required
         NetworkInterfaces:
@@ -266,6 +275,8 @@ Resources:
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng -y
 
             app_dir=/opt/compute-signals-demo
             mkdir -p "$app_dir"
@@ -369,8 +380,6 @@ Resources:
         PredefinedMetricSpecification:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: !Ref CpuTargetValue
-        ScaleOutCooldown: !Ref ScaleOutCooldown
-        ScaleInCooldown: !Ref ScaleInCooldown
 
   RequestCountTargetTrackingScalingPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
@@ -385,14 +394,13 @@ Resources:
             - - !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
               - !GetAtt ApplicationTargetGroup.TargetGroupFullName
         TargetValue: !Ref RequestCountTarget
-        ScaleOutCooldown: !Ref ScaleOutCooldown
-        ScaleInCooldown: !Ref ScaleInCooldown
 
   LoadGeneratorInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
       InstanceType: t3.small
+      IamInstanceProfile: !Ref Profile
       MetadataOptions:
         HttpTokens: required
       NetworkInterfaces:
@@ -410,7 +418,7 @@ Resources:
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
 
-            dnf install -y httpd-tools
+            dnf install -y httpd-tools stress-ng
 
             cat > /usr/local/bin/run-ab-load.sh <<'SCRIPT'
             #!/bin/bash
@@ -448,40 +456,19 @@ Outputs:
     Description: Application Load Balancer URL
     Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
 
-  VpcId:
-    Description: VPC created for this stack
-    Value: !Ref Vpc
-
-  PublicSubnetIds:
-    Description: Public subnets used by the internet-facing ALB
-    Value: !Join
-      - ','
-      - - !Ref PublicSubnetA
-        - !Ref PublicSubnetB
-
-  PrivateSubnetIds:
-    Description: Private subnets used by the Auto Scaling Group
-    Value: !Join
-      - ','
-      - - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
-
-  LoadBalancerSecurityGroupId:
-    Description: Security group for the public ALB
-    Value: !GetAtt LoadBalancerSecurityGroup.GroupId
-
-  InstanceSecurityGroupId:
-    Description: Security group for the Auto Scaling Group instances
-    Value: !GetAtt InstanceSecurityGroup.GroupId
-
   AutoScalingGroupName:
     Description: Auto Scaling Group name
     Value: !Ref AutoScalingGroup
 
-  LoadGeneratorPublicIp:
-    Description: Public IP address of the Apache Bench load generator instance
-    Value: !GetAtt LoadGeneratorInstance.PublicIp
+  LoadGeneratorInstanceId:
+    Description: Instance ID of the Apache Bench load generator instance
+    Value: !Ref LoadGeneratorInstance
 
   LoadGeneratorAbCommand:
     Description: Continuous Apache Bench command for the load generator
     Value: !Sub while true; do ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/; sleep 120; done
+
+  LoadGeneratorSsmCommand:
+    Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
+    Value: !Sub |
+      aws ssm start-session --target ${LoadGeneratorInstance}
