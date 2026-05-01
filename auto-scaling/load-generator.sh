@@ -178,11 +178,11 @@ run_cpu_load() {
     --instance-ids "${ready_instance_ids[@]}" \
     --parameters "commands=[
       \"echo Starting background stress test for ${DURATION} seconds...\",
-      \"nohup stress-ng --cpu 0 -l 85 --vm 1 --timeout ${DURATION}s --metrics-brief > /tmp/stress-ng.log 2>&1 &\",
+      \"nohup stress-ng --cpu 0 -l 85 --vm 1 --timeout ${DURATION}s --metrics-brief >> /tmp/stress-ng.log 2>&1 &\",
       \"echo stress-ng started in background. Check /tmp/stress-ng.log for output.\"
     ]" \
     --max-errors "1" \
-    --comment "Run stress-ng in background on ASG instances" \
+    --comment "Run stress-ng in background on ASG webservers" \
     --query "Command.CommandId" \
     --output text)
 
