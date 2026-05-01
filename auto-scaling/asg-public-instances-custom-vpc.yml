@@ -1,24 +1,18 @@
 ---
-Description: Self-contained VPC, public ALB, and Auto Scaling Group with parameterized request-based and CPU-based scaling, and a load generator. All EC2s run Amazon Linux 2023.
+Description: Self-contained VPC, public ALB, and Auto Scaling Group with parameterized request-based and CPU-based scaling, and a load generator. All EC2s run Amazon Linux 2023. Scale-in is not disabled; two target-tracking policies and baseline synthetic load can keep the group from shrinking until metrics sit below both targets. The ASG omits DesiredCapacity so stack updates do not reset runtime desired capacity to a fixed template value (initial size equals MinSize on create).
 
 Parameters:
   AsgMinSize:
     Type: Number
     Default: 1
     MinValue: 1
-    Description: Minimum number of EC2 instances in the Auto Scaling group
+    Description: Minimum number of EC2 instances; also the initial desired capacity on stack create (DesiredCapacity is not set on the ASG so updates do not overwrite scaling)
 
   AsgMaxSize:
     Type: Number
     Default: 6
     MinValue: 1
     Description: Maximum number of EC2 instances in the Auto Scaling group
-
-  AsgDesiredCapacity:
-    Type: Number
-    Default: 1
-    MinValue: 1
-    Description: Initial number of EC2 instances in the Auto Scaling group
 
   CpuTargetValue:
     Type: Number
@@ -469,7 +463,6 @@ Resources:
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      DesiredCapacity: !Ref AsgDesiredCapacity
       MinSize: !Ref AsgMinSize
       MaxSize: !Ref AsgMaxSize
       HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
@@ -610,6 +603,10 @@ Outputs:
   AlbURL:
     Description: Application Load Balancer URL
     Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group name
+    Value: !Ref AutoScalingGroup
 
   LoadGeneratorInstanceId:
     Description: Instance ID of the Apache Bench load generator instance
