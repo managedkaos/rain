@@ -66,7 +66,7 @@ print_command_summary() {
   printf "\nUse the following commands to check status:\n"
   for index in "${!COMMAND_IDS[@]}"; do
     log_step "${COMMAND_LABELS[$index]}"
-    printf "\naws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}' --output table\n\n" "${COMMAND_IDS[$index]}"
+    printf "\naws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}'\n\n" "${COMMAND_IDS[$index]}"
   done
 
 }
