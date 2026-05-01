@@ -1,5 +1,5 @@
 ---
-Description: Self-contained VPC, public ALB, and public Auto Scaling Group with parameterized request-based and CPU-based scaling on Amazon Linux 2023
+Description: Self-contained VPC, public ALB, and Auto Scaling Group with parameterized request-based and CPU-based scaling, and a load generator. All EC2s run Amazon Linux 2023.
 
 Parameters:
   AsgMinSize:
@@ -16,7 +16,7 @@ Parameters:
 
   AsgDesiredCapacity:
     Type: Number
-    Default: 2
+    Default: 1
     MinValue: 1
     Description: Initial number of EC2 instances in the Auto Scaling group
 
@@ -29,21 +29,33 @@ Parameters:
 
   RequestCountTarget:
     Type: Number
-    Default: 100
-    MinValue: 100
+    Default: 1000
+    MinValue: 1000
     Description: Target ALB requests per target for target tracking scaling
 
   HealthCheckGracePeriod:
     Type: Number
-    Default: 90
+    Default: 120
     MinValue: 0
     Description: Grace period in seconds before ELB health checks affect new instances
 
   DefaultInstanceWarmup:
     Type: Number
-    Default: 60
+    Default: 120
     MinValue: 0
     Description: Default instance warmup in seconds for scaling metrics
+
+  LoadGeneratorRequestCount:
+    Type: Number
+    Default: 100000
+    MinValue: 0
+    Description: Default number of requests to send using request load generator
+
+  LoadGeneratorConcurrency:
+    Type: Number
+    Default: 100
+    MinValue: 0
+    Description: Default concurrency to use for request load generator
 
 Resources:
   Role:
@@ -228,6 +240,11 @@ Resources:
         - !Ref PublicSubnetA
         - !Ref PublicSubnetB
       Type: application
+      Tags:
+        - Key: asg-loadbalancer
+          Value: true
+        - Key: role
+          Value: loadbalancer
 
   ApplicationTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -447,36 +464,38 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-load-generator
+        - Key: asg-load-generator
+          Value: true
         - Key: role
           Value: load-generator
+
       UserData:
         !Base64
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
 
-            dnf install -y httpd-tools
+            dnf install -y httpd-tools git docker java-21-amazon-corretto python3-pip
 
-            cat > /usr/local/bin/run-ab-load.sh <<'SCRIPT'
+            cat > /usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
             #!/bin/bash
             set -euo pipefail
             while true; do
               ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/
-              sleep 240
             done
             SCRIPT
 
-            chmod +x /usr/local/bin/run-ab-load.sh
+            chmod +x /usr/local/bin/generate-alb-requests.sh
 
             cat > /etc/systemd/system/ab-load.service <<'SERVICE'
             [Unit]
-            Description=Continuous Apache Bench load generator against the ALB
+            Description=Apache Bench load generator against the ALB
             After=network-online.target
             Wants=network-online.target
 
             [Service]
             Type=simple
-            ExecStart=/usr/local/bin/run-ab-load.sh
+            ExecStart=/usr/local/bin/generate-alb-requests.sh
             Restart=always
             RestartSec=5
 
@@ -486,7 +505,6 @@ Resources:
 
             systemctl daemon-reload
             systemctl enable ab-load.service
-            systemctl start ab-load.service
 
 Outputs:
   AlbURL:
@@ -502,8 +520,8 @@ Outputs:
     Value: !Ref LoadGeneratorInstance
 
   LoadGeneratorAbCommand:
-    Description: Continuous Apache Bench command for the load generator
-    Value: !Sub while true; do ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/; sleep 120; done
+    Description: Apache Bench command for the load generator
+    Value: !Sub while true; do ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/; done
 
   LoadGeneratorSsmCommand:
     Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
