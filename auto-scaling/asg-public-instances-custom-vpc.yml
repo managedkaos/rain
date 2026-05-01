@@ -45,18 +45,6 @@ Parameters:
     MinValue: 0
     Description: Default instance warmup in seconds for scaling metrics
 
-  LoadGeneratorRequestCount:
-    Type: Number
-    Default: 100000
-    MinValue: 0
-    Description: Default number of requests to send using request load generator
-
-  LoadGeneratorConcurrency:
-    Type: Number
-    Default: 100
-    MinValue: 0
-    Description: Default concurrency to use for request load generator
-
 Resources:
   Role:
     Type: AWS::IAM::Role
@@ -372,16 +360,31 @@ Resources:
             </html>
             HTML
 
+            cat > /usr/local/bin/compute-signals-demo-server.py <<'PY'
+            #!/usr/bin/python3
+            from http.server import HTTPServer, SimpleHTTPRequestHandler
+            from socketserver import ThreadingMixIn
+
+
+            class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+                pass
+
+
+            ThreadedHTTPServer(("", 80), SimpleHTTPRequestHandler).serve_forever()
+            PY
+
+            chmod +x /usr/local/bin/compute-signals-demo-server.py
+
             cat > /etc/systemd/system/compute-signals-demo.service <<'SERVICE'
             [Unit]
-            Description=Simple HTTP server for the Scaling AWS Compute demo
+            Description=Threaded HTTP server using Python3
             After=network-online.target
             Wants=network-online.target
 
             [Service]
             Type=simple
             WorkingDirectory=/opt/compute-signals-demo
-            ExecStart=/usr/bin/python3 -m http.server 80 --directory /opt/compute-signals-demo
+            ExecStart=/usr/bin/python3 /usr/local/bin/compute-signals-demo-server.py
             Restart=always
             RestartSec=5
 

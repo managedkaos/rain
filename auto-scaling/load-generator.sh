@@ -58,13 +58,13 @@ print_command_summary() {
 
   printf "\nCommand summary:\n"
   for index in "${!COMMAND_IDS[@]}"; do
-    printf -- "- %s: %s\n" "${COMMAND_LABELS[$index]} ID" "${COMMAND_IDS[$index]}"
+    log_step "${COMMAND_LABELS[$index]} ID: ${COMMAND_IDS[$index]}"
   done
 
   printf "\nUse the following commands to check status:\n"
   for index in "${!COMMAND_IDS[@]}"; do
-    printf -- "- %s:\n" "${COMMAND_LABELS[$index]}"
-    printf "  aws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}' --output table\n\n" "${COMMAND_IDS[$index]}"
+    log_step "${COMMAND_LABELS[$index]}"
+    printf "\naws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}' --output table\n\n" "${COMMAND_IDS[$index]}"
   done
 
 }
@@ -148,14 +148,12 @@ run_cpu_load() {
   log_step "Checking SSM availability for CPU target instances ..."
 
   for instance_id in "${instance_ids[@]}"; do
-    ssm_status_output=$(aws ssm describe-instance-information \
+    ping_status_output=$(aws ssm describe-instance-information \
       --filters "Key=InstanceIds,Values=${instance_id}" \
-      --query "InstanceInformationList[0].[PingStatus,AssociationStatus]" \
+      --query "InstanceInformationList[0].PingStatus" \
       --output text)
 
-    read -r ping_status association_status <<< "$ssm_status_output"
-    ping_status=${ping_status:-None}
-    association_status=${association_status:-None} # collected but unused
+    ping_status=${ping_status_output:-None}
 
     if [[ "$ping_status" == "Online" ]]; then
       log_step "Instance $instance_id is SSM ready: PingStatus=$ping_status"
