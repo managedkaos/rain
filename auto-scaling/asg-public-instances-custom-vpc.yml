@@ -303,6 +303,8 @@ Resources:
         InstanceType: t3.small
         IamInstanceProfile:
           Name: !Ref Profile
+        Monitoring:
+          Enabled: true
         MetadataOptions:
           HttpTokens: required
         NetworkInterfaces:
@@ -527,6 +529,7 @@ Resources:
     Properties:
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
       InstanceType: t3.small
+      Monitoring: true
       IamInstanceProfile: !Ref Profile
       MetadataOptions:
         HttpTokens: required
