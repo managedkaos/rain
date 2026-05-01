@@ -20,7 +20,9 @@ Usage: $0 [--duration SECONDS] [--cpu] [--requests [COUNT]] [--concurrency COUNT
 Options:
   --duration SECONDS    Amount of time to sustain load. Defaults to 300.
   --cpu                 Generate CPU load on running instances tagged role=webserver.
-  --requests [COUNT]    Generate request load from the load generator instance. Defaults to 1000000.
+  --requests [COUNT]    Generate request load from the load generator instance (adds
+                       temporary traffic on top of the baseline ab-load.service on that
+                       instance). Defaults to 1000000.
   --concurrency COUNT   Apache Bench concurrency for request load. Defaults to 200.
   -h, --help            Show this help.
 USAGE
@@ -219,6 +221,8 @@ get_load_balancer_dns_name() {
 }
 
 run_request_load() {
+  # Baseline HTTP load runs continuously via ab-load.service on the load generator; this SSM
+  # run adds a bounded spike (timeout … ab …) on top of that service.
   local load_generator_instance_id
   local alb_dns
   local ab_command

@@ -22,14 +22,14 @@ Parameters:
 
   CpuTargetValue:
     Type: Number
-    Default: 50
+    Default: 75
     MinValue: 10
     MaxValue: 90
     Description: Target average CPU utilization percentage for target tracking scaling
 
   RequestCountTarget:
     Type: Number
-    Default: 1000
+    Default: 5000
     MinValue: 1000
     Description: Target ALB requests per target for target tracking scaling
 
@@ -311,6 +311,35 @@ Resources:
             systemctl enable amazon-cloudwatch-agent
             systemctl start amazon-cloudwatch-agent
 
+            cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
+            #!/bin/bash
+            while true; do
+              LOAD=$((RANDOM % 25 + 20))
+              DURATION=$((RANDOM % 60 +120))
+              stress-ng --cpu 1 --cpu-load $LOAD --cpu-method matrixprod --timeout $DURATION
+            done
+            CPULOAD
+
+            chmod +x /usr/local/bin/cpu-load.sh
+
+            cat > /etc/systemd/system/cpu-load.service <<'CPULOADSVC'
+            [Unit]
+            Description=Sustained CPU load simulator
+            After=network.target
+
+            [Service]
+            ExecStart=/usr/local/bin/cpu-load.sh
+            Restart=always
+            RestartSec=5
+            User=nobody
+
+            [Install]
+            WantedBy=multi-user.target
+            CPULOADSVC
+
+            systemctl daemon-reload
+            systemctl enable --now cpu-load.service
+
             app_dir=/opt/compute-signals-demo
             mkdir -p "$app_dir"
 
@@ -483,8 +512,13 @@ Resources:
             cat > /usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
             #!/bin/bash
             set -euo pipefail
+            URL="http://${ApplicationLoadBalancer.DNSName}/"
             while true; do
-              ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/
+              n=$((RANDOM % 401 + 100))
+              c=$((RANDOM % 11 + 3))
+              pause=$((RANDOM % 21 + 10))
+              ab -n "$n" -c "$c" "$URL"
+              sleep "$pause"
             done
             SCRIPT
 
@@ -507,7 +541,7 @@ Resources:
             SERVICE
 
             systemctl daemon-reload
-            systemctl enable ab-load.service
+            systemctl enable --now ab-load.service
 
 Outputs:
   AlbURL:
@@ -523,8 +557,8 @@ Outputs:
     Value: !Ref LoadGeneratorInstance
 
   LoadGeneratorAbCommand:
-    Description: Apache Bench command for the load generator
-    Value: !Sub while true; do ab -n 1000 -c 20 http://${ApplicationLoadBalancer.DNSName}/; done
+    Description: Baseline variable Apache Bench bursts (see UserData on LoadGeneratorInstance)
+    Value: !Sub 'Light spiky loop on instance; target http://${ApplicationLoadBalancer.DNSName}/ (random n, c, and sleep between bursts)'
 
   LoadGeneratorSsmCommand:
     Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
