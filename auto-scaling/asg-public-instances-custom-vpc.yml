@@ -1,5 +1,5 @@
 ---
-Description: Self-contained VPC, public ALB, and Auto Scaling Group with parameterized request-based and CPU-based scaling, and a load generator. All EC2s run Amazon Linux 2023. Scale-in is not disabled; two target-tracking policies and baseline synthetic load can keep the group from shrinking until metrics sit below both targets. The ASG omits DesiredCapacity so stack updates do not reset runtime desired capacity to a fixed template value (initial size equals MinSize on create).
+Description: Self-contained VPC, public ALB, and Auto Scaling Group with parameterized request-based and CPU-based scaling, and a load generator. All EC2s run Amazon Linux 2023.
 
 Parameters:
   AsgMinSize:
@@ -350,8 +350,8 @@ Resources:
             cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
             #!/bin/bash
             while true; do
-              LOAD=$((RANDOM % 25 + 20))
-              DURATION=$((RANDOM % 60 +120))
+              LOAD=$((RANDOM % 25 + 10))
+              DURATION=$((RANDOM % 60 + 120))
               stress-ng --cpu 1 --cpu-load $LOAD --cpu-method matrixprod --timeout $DURATION
             done
             CPULOAD
@@ -374,9 +374,9 @@ Resources:
             CPULOADSVC
 
             systemctl daemon-reload
-            systemctl enable --now cpu-load.service
+            #systemctl enable --now cpu-load.service
 
-            app_dir=/opt/compute-signals-demo
+            app_dir=/opt/web-application
             mkdir -p "$app_dir"
 
             token=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
@@ -425,7 +425,7 @@ Resources:
             </html>
             HTML
 
-            cat > /usr/local/bin/compute-signals-demo-server.py <<'PY'
+            cat > /usr/local/bin/web-application-server.py <<'PY'
             #!/usr/bin/python3
             from http.server import HTTPServer, SimpleHTTPRequestHandler
             from socketserver import ThreadingMixIn
@@ -438,9 +438,9 @@ Resources:
             ThreadedHTTPServer(("", 80), SimpleHTTPRequestHandler).serve_forever()
             PY
 
-            chmod +x /usr/local/bin/compute-signals-demo-server.py
+            chmod +x /usr/local/bin/web-application-server.py
 
-            cat > /etc/systemd/system/compute-signals-demo.service <<'SERVICE'
+            cat > /etc/systemd/system/web-application.service <<'SERVICE'
             [Unit]
             Description=Threaded HTTP server using Python3
             After=network-online.target
@@ -448,8 +448,8 @@ Resources:
 
             [Service]
             Type=simple
-            WorkingDirectory=/opt/compute-signals-demo
-            ExecStart=/usr/bin/python3 /usr/local/bin/compute-signals-demo-server.py
+            WorkingDirectory=/opt/web-application
+            ExecStart=/usr/bin/python3 /usr/local/bin/web-application-server.py
             Restart=always
             RestartSec=5
 
@@ -458,7 +458,7 @@ Resources:
             SERVICE
 
             systemctl daemon-reload
-            systemctl enable --now compute-signals-demo.service
+            systemctl enable --now web-application.service
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -582,7 +582,7 @@ Resources:
             SERVICE
 
             systemctl daemon-reload
-            systemctl enable --now ab-load.service
+            #systemctl enable --now ab-load.service
 
   StackResourceGroup:
     Type: AWS::ResourceGroups::Group
