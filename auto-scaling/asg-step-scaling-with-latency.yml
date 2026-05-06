@@ -1,0 +1,718 @@
+---
+Description: Same VPC/ALB/ASG/load-generator stack as the custom-vpc template, but CPU step scaling only (CloudWatch alarms on AWS/EC2 CPUUtilization for the ASG). No ALB request-count auto scaling. Short Period and Cooldown defaults for responsive demos; lowering evaluation periods or thresholds increases thrash risk. All EC2s run Amazon Linux 2023.
+
+Parameters:
+  AsgMinSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Minimum number of EC2 instances; also the initial desired capacity on stack create (DesiredCapacity is not set on the ASG so updates do not overwrite scaling)
+
+  AsgMaxSize:
+    Type: Number
+    Default: 6
+    MinValue: 1
+    Description: Maximum number of EC2 instances in the Auto Scaling group
+
+  CpuScaleOutThreshold:
+    Type: Number
+    Default: 65
+    MinValue: 1
+    MaxValue: 100
+    Description: Average ASG CPU percent above which scale-out alarm fires (GreaterThanThreshold)
+
+  CpuScaleInThreshold:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    MaxValue: 100
+    Description: Average ASG CPU percent below which scale-in alarm fires (LessThanThreshold); keep well below CpuScaleOutThreshold
+
+  CpuScalingPeriod:
+    Type: Number
+    Default: 60
+    MinValue: 60
+    MaxValue: 300
+    Description: CloudWatch period in seconds for CPU alarms (60 aligns with detailed monitoring on instances)
+
+  CpuScaleOutEvaluationPeriods:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Consecutive breaching periods before scale-out alarm triggers
+
+  CpuScaleInEvaluationPeriods:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Consecutive breaching periods before scale-in alarm triggers
+
+  CpuStepScalingCooldown:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    MaxValue: 600
+    Description: Seconds between allowed scaling activities per step policy (short value reacts faster but may flap)
+
+  HealthCheckGracePeriod:
+    Type: Number
+    Default: 120
+    MinValue: 0
+    Description: Grace period in seconds before ELB health checks affect new instances
+
+  ApplicationLatencySeconds:
+    Type: Number
+    Default: 0.0
+    MinValue: 0
+    Description: Floating point number of seconds for the Python web application to sleep before responding to each request
+
+  DefaultInstanceWarmup:
+    Type: Number
+    Default: 120
+    MinValue: 0
+    Description: Default instance warmup in seconds for scaling metrics
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref Role]
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpc
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-igw
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-a
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-b
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.10.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-a
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-b
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-rt
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-rt
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetA
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetB
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the internet to the ALB
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the ALB to the Auto Scaling Group instances
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  LoadGeneratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow outbound access to the ALB
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Type: application
+      Tags:
+        - Key: asg-loadbalancer
+          Value: true
+        - Key: role
+          Value: loadbalancer
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  ApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApplicationTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: ResourceGroup
+              Value: !Sub ${AWS::StackName}-rg
+      LaunchTemplateData:
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+        InstanceType: t3.small
+        IamInstanceProfile:
+          Name: !Ref Profile
+        Monitoring:
+          Enabled: true
+        MetadataOptions:
+          HttpTokens: required
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref InstanceSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${AWS::StackName}-asg-webserver
+              - Key: asg-webserver
+                Value: true
+              - Key: role
+                Value: webserver
+              - Key: ResourceGroup
+                Value: !Sub ${AWS::StackName}-rg
+
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng amazon-cloudwatch-agent -y
+
+            mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
+            {
+              "metrics": {
+                "metrics_collected": {
+                  "cpu": {
+                    "measurement": ["cpu_usage_idle", "cpu_usage_user", "cpu_usage_system"],
+                    "metrics_collection_interval": 60,
+                    "totalcpu": true
+                  },
+                  "mem": {
+                    "measurement": ["mem_used_percent"],
+                    "metrics_collection_interval": 60
+                  }
+                }
+              }
+            }
+            CWAGENT
+
+            systemctl enable amazon-cloudwatch-agent
+            systemctl start amazon-cloudwatch-agent
+
+            cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
+            #!/bin/bash
+            while true; do
+              LOAD=$((RANDOM % 25 + 10))
+              DURATION=$((RANDOM % 60 + 120))
+              stress-ng --cpu 1 --cpu-load $LOAD --cpu-method matrixprod --timeout $DURATION
+            done
+            CPULOAD
+
+            chmod +x /usr/local/bin/cpu-load.sh
+
+            cat > /etc/systemd/system/cpu-load.service <<'CPULOADSVC'
+            [Unit]
+            Description=Sustained CPU load simulator
+            After=network.target
+
+            [Service]
+            ExecStart=/usr/local/bin/cpu-load.sh
+            Restart=always
+            RestartSec=5
+            User=nobody
+
+            [Install]
+            WantedBy=multi-user.target
+            CPULOADSVC
+
+            systemctl daemon-reload
+            #systemctl enable --now cpu-load.service
+
+            app_dir=/opt/web-application
+            mkdir -p "$app_dir"
+
+            token=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            instance_id=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            availability_zone=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            cat > "$app_dir/index.html" <<HTML
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <title>Scaling AWS Compute Demo</title>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  margin: 2rem;
+                  background: #f7f9fc;
+                  color: #1f2937;
+                }
+                .card {
+                  max-width: 720px;
+                  background: #ffffff;
+                  padding: 2rem;
+                  border-radius: 12px;
+                  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+                }
+                code {
+                  background: #eef2ff;
+                  padding: 0.2rem 0.4rem;
+                  border-radius: 6px;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>Scaling AWS Compute Demo</h1>
+                <p>This page is being served by an EC2 instance in an Auto Scaling Group behind an Application Load Balancer.</p>
+                <p><strong>Instance ID:</strong> <code>$instance_id</code></p>
+                <p><strong>Availability Zone:</strong> <code>$availability_zone</code></p>
+                <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
+              </div>
+            </body>
+            </html>
+            HTML
+
+            cat > /usr/local/bin/web-application-server.py <<'PY'
+            #!/usr/bin/python3
+            from http.server import HTTPServer, SimpleHTTPRequestHandler
+            from socketserver import ThreadingMixIn
+            from time import sleep
+
+
+            APPLICATION_LATENCY_SECONDS = float("${ApplicationLatencySeconds}")
+
+
+            class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+                pass
+
+
+            class LatencyHTTPRequestHandler(SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/health":
+                        self.send_response(200)
+                        self.end_headers()
+                        return
+
+                    sleep(APPLICATION_LATENCY_SECONDS)
+                    super().do_GET()
+
+                def do_HEAD(self):
+                    if self.path == "/health":
+                        self.send_response(200)
+                        self.end_headers()
+                        return
+
+                    sleep(APPLICATION_LATENCY_SECONDS)
+                    super().do_HEAD()
+
+
+            ThreadedHTTPServer(("", 80), LatencyHTTPRequestHandler).serve_forever()
+            PY
+
+            chmod +x /usr/local/bin/web-application-server.py
+
+            cat > /etc/systemd/system/web-application.service <<'SERVICE'
+            [Unit]
+            Description=Threaded HTTP server using Python3
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/web-application
+            ExecStart=/usr/bin/python3 /usr/local/bin/web-application-server.py
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable --now web-application.service
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
+      HealthCheckType: ELB
+      DefaultInstanceWarmup: !Ref DefaultInstanceWarmup
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MetricsCollection:
+        - Granularity: "1Minute"
+      TargetGroupARNs:
+        - !Ref ApplicationTargetGroup
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-asg-webserver
+          PropagateAtLaunch: true
+        - Key: asg-webserver
+          Value: true
+          PropagateAtLaunch: true
+        - Key: role
+          Value: webserver
+          PropagateAtLaunch: true
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+          PropagateAtLaunch: true
+
+
+  CpuStepScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      Cooldown: !Ref CpuStepScalingCooldown
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          MetricIntervalUpperBound: 15
+          ScalingAdjustment: 1
+        - MetricIntervalLowerBound: 15
+          ScalingAdjustment: 2
+
+  CpuStepScaleInPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      Cooldown: !Ref CpuStepScalingCooldown
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
+      StepAdjustments:
+        - MetricIntervalUpperBound: 0
+          ScalingAdjustment: -1
+
+  CpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale out when ASG average CPU exceeds threshold
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: !Ref CpuScalingPeriod
+      EvaluationPeriods: !Ref CpuScaleOutEvaluationPeriods
+      Threshold: !Ref CpuScaleOutThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref CpuStepScaleOutPolicy
+
+  CpuLowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale in when ASG average CPU stays below threshold
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: !Ref CpuScalingPeriod
+      EvaluationPeriods: !Ref CpuScaleInEvaluationPeriods
+      Threshold: !Ref CpuScaleInThreshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref CpuStepScaleInPolicy
+
+  LoadGeneratorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      InstanceType: t3.small
+      Monitoring: true
+      IamInstanceProfile: !Ref Profile
+      MetadataOptions:
+        HttpTokens: required
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref LoadGeneratorSecurityGroup
+          SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-load-generator
+        - Key: asg-load-generator
+          Value: true
+        - Key: role
+          Value: load-generator
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+      UserData:
+        !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install -y httpd-tools git docker java-21-amazon-corretto python3-pip
+
+            cat > /usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
+            #!/bin/bash
+            set -euo pipefail
+            URL="http://${ApplicationLoadBalancer.DNSName}/"
+            while true; do
+              n=$((RANDOM % 401 + 100))
+              c=$((RANDOM % 11 + 3))
+              pause=$((RANDOM % 21 + 10))
+              ab -n "$n" -c "$c" "$URL"
+              sleep "$pause"
+            done
+            SCRIPT
+
+            chmod +x /usr/local/bin/generate-alb-requests.sh
+
+            cat > /etc/systemd/system/ab-load.service <<'SERVICE'
+            [Unit]
+            Description=Apache Bench load generator against the ALB
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/generate-alb-requests.sh
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            #systemctl enable --now ab-load.service
+
+  StackResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name: !Sub ${AWS::StackName}-rg
+      Description: !Sub Resource group for CloudFormation stack ${AWS::StackName}
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+        Query:
+          ResourceTypeFilters:
+            - AWS::AllSupported
+          StackIdentifier: !Ref AWS::StackId
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub ${AWS::StackName}-rg
+
+Outputs:
+  AlbURL:
+    Description: Application Load Balancer URL
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group name
+    Value: !Ref AutoScalingGroup
+
+  LoadGeneratorInstanceId:
+    Description: Instance ID of the Apache Bench load generator instance
+    Value: !Ref LoadGeneratorInstance
+
+  LoadGeneratorSsmCommand:
+    Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
+    Value: !Sub |
+      aws ssm start-session --target ${LoadGeneratorInstance}
