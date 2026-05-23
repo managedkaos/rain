@@ -374,7 +374,9 @@ Resources:
             CWAGENT
 
             systemctl enable amazon-cloudwatch-agent
+            systemctl enable amazon-ssm-agent
             systemctl start amazon-cloudwatch-agent
+            systemctl start amazon-ssm-agent
 
             cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
             #!/bin/bash
@@ -653,6 +655,10 @@ Resources:
 
             systemctl daemon-reload
             #systemctl enable --now ab-load.service
+            systemctl enable amazon-cloudwatch-agent
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-cloudwatch-agent
+            systemctl start amazon-ssm-agent
 
   StackResourceGroup:
     Type: AWS::ResourceGroups::Group
