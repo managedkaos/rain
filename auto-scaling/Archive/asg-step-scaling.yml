@@ -627,8 +627,11 @@ Resources:
             set -euo pipefail
             URL="http://${ApplicationLoadBalancer.DNSName}/"
             while true; do
-              curl -s -o /dev/null $URL
-              sleep 1
+              n=$((RANDOM % 401 + 100))
+              c=$((RANDOM % 11 + 3))
+              pause=$((RANDOM % 21 + 10))
+              ab -n "$n" -c "$c" "$URL"
+              sleep "$pause"
             done
             SCRIPT
 
@@ -651,7 +654,7 @@ Resources:
             SERVICE
 
             systemctl daemon-reload
-            systemctl enable --now ab-load.service
+            #systemctl enable --now ab-load.service
             systemctl enable amazon-cloudwatch-agent
             systemctl enable amazon-ssm-agent
             systemctl start amazon-cloudwatch-agent
