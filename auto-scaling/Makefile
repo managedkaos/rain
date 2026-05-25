@@ -23,7 +23,7 @@ all: lint validate ## Run linting and validation
 
 lint: cfn-lint ## Run cfn-lint
 
-cfn-lint: ## Lint CloudFormation templates
+cfn-lint: ## Lint CloudFormation templates using cfn-lint
 	@echo && echo "# CloudFormation lint ..."
 	@set -e; for template in $(TEMPLATES); do \
 		echo "Linting $$template"; \
@@ -94,7 +94,7 @@ mixed-cycle: make-executable ## Create combined CPU + HTTP cycles
 	  --low-request-count $(REQUEST_LOW_COUNT) \
 	  --wait-for-low-phase
 
-reset-asg: make-executable ## Reset ASG to clear any scaling effects
+reset-asg: make-executable ## Reset ASG desired-capacity to '1' to clear any scaling effects
 	./load-generator.sh --reset-asg
 
 .PHONY: help make-executable cpu-spike cpu-cycle request-spike request-cycle mixed-spike mixed-cycle
