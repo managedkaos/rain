@@ -1,30 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DURATION=300
+HIGH_DURATION=120
+LOW_DURATION=90
+CYCLES=4
 RUN_CPU=false
 RUN_REQUESTS=false
+CPU_LOAD=85
+CPU_WORKERS=0
 REQUEST_COUNT=1000000
-CONCURRENCY=200
+HIGH_CONCURRENCY=300
+LOW_CONCURRENCY=5
+LOW_REQUEST_COUNT=1000
+WAIT_FOR_LOW_PHASE=false
 COMMAND_LABELS=()
 COMMAND_IDS=()
 
 log_step() {
-  printf -- "- %s\n" "$*" >&2
+  printf -- '- %s
+' "$*" >&2
 }
 
 usage() {
   cat <<USAGE
-Usage: $0 [--duration SECONDS] [--cpu] [--requests [COUNT]] [--concurrency COUNT]
+Usage: $0 [options] [--cpu] [--requests]
 
 Options:
-  --duration SECONDS    Amount of time to sustain load. Defaults to 300.
-  --cpu                 Generate CPU load on running instances tagged role=webserver.
-  --requests [COUNT]    Generate request load from the load generator instance (adds
-                       temporary traffic on top of the baseline ab-load.service on that
-                       instance). Defaults to 1000000.
-  --concurrency COUNT   Apache Bench concurrency for request load. Defaults to 200.
-  -h, --help            Show this help.
+  --cpu                        Generate CPU load on running instances tagged role=webserver.
+  --requests [COUNT]           Generate ALB request load from the load generator instance.
+                               Defaults to 1000000 requests for each high phase.
+  --cycles COUNT               Number of high/low cycles to run. Defaults to 4.
+  --high-duration SECONDS      Length of each high-load phase. Defaults to 120.
+  --low-duration SECONDS       Length of each low-load phase. Defaults to 90.
+  --cpu-load PERCENT           stress-ng CPU load percentage during high phase. Defaults to 85.
+  --cpu-workers COUNT          stress-ng worker count. 0 means one worker per vCPU. Defaults to 0.
+  --high-concurrency COUNT     Apache Bench concurrency during high phase. Defaults to 300.
+  --low-concurrency COUNT      Apache Bench concurrency during low phase. Defaults to 5.
+  --low-request-count COUNT    Apache Bench request count during low phase. Defaults to 1000.
+  --wait-for-low-phase         Run a bounded low request phase instead of sleeping idle.
+  -h, --help                   Show this help.
+
+Examples:
+  $0 --cpu --cycles 6 --high-duration 120 --low-duration 90 --cpu-load 90
+  $0 --requests --cycles 5 --high-duration 180 --low-duration 120 --requests 2000000 --high-concurrency 400 --wait-for-low-phase
+  $0 --cpu --requests --cycles 4 --high-duration 120 --low-duration 120 --cpu-load 85 --high-concurrency 300
 USAGE
 }
 
@@ -42,7 +61,7 @@ record_command_id() {
   local label=$1
   local command_id=$2
 
-  if [[ -z "$command_id" || "$command_id" == "None" ]]; then
+  if [[ -z "$command_id" || "$command_id" == 'None' ]]; then
     echo "Failed to capture SSM command ID for $label." >&2
     exit 1
   fi
@@ -58,29 +77,152 @@ print_command_summary() {
     return
   fi
 
-  printf "\nCommand summary:\n"
+  printf '
+Command summary:
+'
   for index in "${!COMMAND_IDS[@]}"; do
     log_step "${COMMAND_LABELS[$index]} ID: ${COMMAND_IDS[$index]}"
   done
 
-  printf "\nUse the following commands to check status:\n"
+  printf '
+Use the following commands to check status:
+'
   for index in "${!COMMAND_IDS[@]}"; do
     log_step "${COMMAND_LABELS[$index]}"
-    printf "\naws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}'\n\n" "${COMMAND_IDS[$index]}"
+    printf "
+aws ssm list-command-invocations --command-id %q --details --query 'CommandInvocations[].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}'
+
+" "${COMMAND_IDS[$index]}"
+  done
+}
+
+get_webserver_instance_ids() {
+  aws ec2 describe-instances     --filters Name=tag:role,Values=webserver Name=instance-state-name,Values=running     --query 'Reservations[].Instances[].InstanceId'     --output text
+}
+
+get_ssm_ready_instance_ids() {
+  local instance_ids=("$@")
+  local ready=()
+  local instance_id
+  local ping_status
+
+  for instance_id in "${instance_ids[@]}"; do
+    ping_status=$(aws ssm describe-instance-information       --filters "Key=InstanceIds,Values=${instance_id}"       --query 'InstanceInformationList[0].PingStatus'       --output text 2>/dev/null || true)
+    if [[ "$ping_status" == 'Online' ]]; then
+      ready+=("$instance_id")
+    else
+      log_step "Skipping instance ${instance_id}; SSM PingStatus=${ping_status:-Unknown}"
+    fi
   done
 
+  printf '%s
+' "${ready[@]}"
+}
+
+get_load_generator_instance_id() {
+  aws ec2 describe-instances     --filters Name=tag:asg-load-generator,Values=true Name=tag:role,Values=load-generator Name=instance-state-name,Values=running     --query 'Reservations[].Instances[0].InstanceId'     --output text
+}
+
+get_load_balancer_dns_name() {
+  local load_balancer_arn
+  load_balancer_arn=$(aws resourcegroupstaggingapi get-resources     --tag-filters Key=asg-loadbalancer,Values=true Key=role,Values=loadbalancer     --resource-type-filters elasticloadbalancing:loadbalancer     --query 'ResourceTagMappingList[0].ResourceARN'     --output text)
+
+  if [[ -z "$load_balancer_arn" || "$load_balancer_arn" == 'None' ]]; then
+    echo 'No load balancer found with tags asg-loadbalancer=true and role=loadbalancer.' >&2
+    exit 1
+  fi
+
+  aws elbv2 describe-load-balancers     --load-balancer-arns "$load_balancer_arn"     --query 'LoadBalancers[0].DNSName'     --output text
+}
+
+send_ssm_shell_command() {
+  local label=$1
+  shift
+  local comment=$1
+  shift
+  local instance_ids_string=$1
+  shift
+  local payload=$1
+
+  local params_file
+  local command_id
+  params_file=$(mktemp)
+  printf '%s' "$payload" | python3 -c 'import json, sys; print(json.dumps({"commands": sys.stdin.read().splitlines()}))' > "$params_file"
+
+  read -r -a instance_ids <<<"$instance_ids_string"
+  command_id=$(aws ssm send-command     --document-name AWS-RunShellScript     --instance-ids "${instance_ids[@]}"     --parameters file://"$params_file"     --max-errors 1     --comment "$comment"     --query 'Command.CommandId'     --output text)
+  rm -f "$params_file"
+
+  record_command_id "$label" "$command_id"
+}
+
+run_cpu_phase() {
+  local cycle=$1
+  local phase=$2
+  local duration=$3
+  local load_percent=$4
+  local instance_ids_output
+  local -a instance_ids
+  local -a ready_instance_ids
+  local cmd
+
+  instance_ids_output=$(get_webserver_instance_ids)
+  read -r -a instance_ids <<<"$instance_ids_output"
+  if [[ ${#instance_ids[@]} -eq 0 ]]; then
+    echo 'No running EC2 instances found with tag role=webserver.' >&2
+    exit 1
+  fi
+
+  mapfile -t ready_instance_ids < <(get_ssm_ready_instance_ids "${instance_ids[@]}")
+  if [[ ${#ready_instance_ids[@]} -eq 0 ]]; then
+    echo 'No CPU target instances are SSM ready.' >&2
+    exit 1
+  fi
+
+  cmd=$(cat <<EOF
+set -euo pipefail
+pkill -f 'stress-ng --cpu' || true
+nohup stress-ng --cpu ${CPU_WORKERS} --cpu-load ${load_percent} --timeout ${duration}s --metrics-brief >/tmp/stress-ng-${cycle}-${phase}.log 2>&1 &
+echo started cpu ${phase} phase for cycle ${cycle}
+EOF
+)
+
+  log_step "Sending CPU ${phase} phase for cycle ${cycle} to ${#ready_instance_ids[@]} webserver instance(s)."
+  send_ssm_shell_command "CPU ${phase} cycle ${cycle}" "Run CPU ${phase} phase for cycle ${cycle}" "${ready_instance_ids[*]}" "$cmd"
+}
+
+run_request_phase() {
+  local cycle=$1
+  local phase=$2
+  local duration=$3
+  local request_count=$4
+  local concurrency=$5
+  local load_generator_instance_id
+  local alb_dns
+  local cmd
+
+  load_generator_instance_id=$(get_load_generator_instance_id)
+  if [[ -z "$load_generator_instance_id" || "$load_generator_instance_id" == 'None' ]]; then
+    echo 'No running load generator instance found.' >&2
+    exit 1
+  fi
+
+  alb_dns=$(get_load_balancer_dns_name)
+
+  cmd=$(cat <<EOF
+set -euo pipefail
+pkill -f '(^|/)ab ' || true
+timeout ${duration}s ab -n ${request_count} -c ${concurrency} http://${alb_dns}/ >/tmp/ab-${cycle}-${phase}.log 2>&1 || true
+echo completed request ${phase} phase for cycle ${cycle}
+EOF
+)
+
+  log_step "Sending request ${phase} phase for cycle ${cycle} via load generator ${load_generator_instance_id}."
+  send_ssm_shell_command "Requests ${phase} cycle ${cycle}" "Run request ${phase} phase for cycle ${cycle}" "$load_generator_instance_id" "$cmd"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --duration)
-      if [[ $# -lt 2 ]]; then
-        echo "--duration requires a value." >&2
-        exit 1
-      fi
-      DURATION=$2
-      shift 2
-      ;;
     --cpu)
       RUN_CPU=true
       shift
@@ -94,13 +236,41 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
-    --concurrency)
-      if [[ $# -lt 2 ]]; then
-        echo "--concurrency requires a value." >&2
-        exit 1
-      fi
-      CONCURRENCY=$2
+    --cycles)
+      CYCLES=$2
       shift 2
+      ;;
+    --high-duration)
+      HIGH_DURATION=$2
+      shift 2
+      ;;
+    --low-duration)
+      LOW_DURATION=$2
+      shift 2
+      ;;
+    --cpu-load)
+      CPU_LOAD=$2
+      shift 2
+      ;;
+    --cpu-workers)
+      CPU_WORKERS=$2
+      shift 2
+      ;;
+    --high-concurrency)
+      HIGH_CONCURRENCY=$2
+      shift 2
+      ;;
+    --low-concurrency)
+      LOW_CONCURRENCY=$2
+      shift 2
+      ;;
+    --low-request-count)
+      LOW_REQUEST_COUNT=$2
+      shift 2
+      ;;
+    --wait-for-low-phase)
+      WAIT_FOR_LOW_PHASE=true
+      shift
       ;;
     -h|--help)
       usage
@@ -114,163 +284,47 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_positive_integer "--duration" "$DURATION"
-require_positive_integer "--requests" "$REQUEST_COUNT"
-require_positive_integer "--concurrency" "$CONCURRENCY"
+require_positive_integer --cycles "$CYCLES"
+require_positive_integer --high-duration "$HIGH_DURATION"
+require_positive_integer --low-duration "$LOW_DURATION"
+require_positive_integer --cpu-load "$CPU_LOAD"
+if [[ ! "$CPU_WORKERS" =~ ^[0-9]+$ ]]; then
+  echo '--cpu-workers must be a non-negative integer.' >&2
+  exit 1
+fi
+require_positive_integer --requests "$REQUEST_COUNT"
+require_positive_integer --high-concurrency "$HIGH_CONCURRENCY"
+require_positive_integer --low-concurrency "$LOW_CONCURRENCY"
+require_positive_integer --low-request-count "$LOW_REQUEST_COUNT"
 
 if [[ "$RUN_CPU" == false && "$RUN_REQUESTS" == false ]]; then
-  printf "\nNo load type selected: choose at least one or both: --cpu, --requests\n\n" >&2
+  echo 'No load type selected; choose at least one or both of --cpu and --requests.' >&2
   usage >&2
   exit 1
 fi
 
-run_cpu_load() {
-  local instance_ids_output
-  local instance_id
-  local ssm_status_output
-  local ping_status
-  local association_status
-  local command_id
-  local -a instance_ids
-  local -a ready_instance_ids=()
+log_step "Configuration: cycles=${CYCLES}, high=${HIGH_DURATION}s, low=${LOW_DURATION}s, cpu=${RUN_CPU}, requests=${RUN_REQUESTS}, cpu_load=${CPU_LOAD}, cpu_workers=${CPU_WORKERS}, high_concurrency=${HIGH_CONCURRENCY}, low_concurrency=${LOW_CONCURRENCY}, wait_for_low_phase=${WAIT_FOR_LOW_PHASE}"
 
-  log_step "Finding running webserver instances for CPU load ..."
-  instance_ids_output=$(aws ec2 describe-instances \
-    --filters "Name=tag:role,Values=webserver" "Name=instance-state-name,Values=running" \
-    --query "Reservations[].Instances[].InstanceId" \
-    --output text)
-  read -r -a instance_ids <<< "$instance_ids_output"
-
-  if [[ ${#instance_ids[@]} -eq 0 ]]; then
-    echo "No running EC2 instances found with tag role=webserver." >&2
-    exit 1
+for ((cycle=1; cycle<=CYCLES; cycle++)); do
+  log_step "Starting high phase ${cycle}/${CYCLES}."
+  if [[ "$RUN_CPU" == true ]]; then
+    run_cpu_phase "$cycle" high "$HIGH_DURATION" "$CPU_LOAD"
   fi
-
-  log_step "Found ${#instance_ids[@]} webserver instance(s): ${instance_ids[*]}"
-  log_step "Checking SSM availability for CPU target instances ..."
-
-  for instance_id in "${instance_ids[@]}"; do
-    ping_status_output=$(aws ssm describe-instance-information \
-      --filters "Key=InstanceIds,Values=${instance_id}" \
-      --query "InstanceInformationList[0].PingStatus" \
-      --output text)
-
-    ping_status=${ping_status_output:-None}
-
-    if [[ "$ping_status" == "Online" ]]; then
-      log_step "Instance $instance_id is SSM ready: PingStatus=$ping_status"
-      ready_instance_ids+=("$instance_id")
-    else
-      log_step "Skipping instance $instance_id: PingStatus=$ping_status"
-    fi
-  done
-
-  if [[ ${#ready_instance_ids[@]} -eq 0 ]]; then
-    echo "No CPU target instances are SSM ready with PingStatus=Online." >&2
-    exit 1
+  if [[ "$RUN_REQUESTS" == true ]]; then
+    run_request_phase "$cycle" high "$HIGH_DURATION" "$REQUEST_COUNT" "$HIGH_CONCURRENCY"
   fi
+  sleep "$HIGH_DURATION"
 
-  log_step "Using ${#ready_instance_ids[@]} SSM-ready webserver instance(s): ${ready_instance_ids[*]}"
-  log_step "Building CPU load command for ${DURATION} seconds..."
-  log_step "Sending CPU load command with SSM..."
-  command_id=$(aws ssm send-command \
-    --document-name "AWS-RunShellScript" \
-    --instance-ids "${ready_instance_ids[@]}" \
-    --parameters "commands=[
-      \"echo Starting background stress test for ${DURATION} seconds...\",
-      \"nohup stress-ng --cpu 0 -l 85 --vm 1 --timeout ${DURATION}s --metrics-brief >> /tmp/stress-ng.log 2>&1 &\",
-      \"echo stress-ng started in background. Check /tmp/stress-ng.log for output.\"
-    ]" \
-    --max-errors "1" \
-    --comment "Run stress-ng in background on ASG webservers" \
-    --query "Command.CommandId" \
-    --output text)
-
-  record_command_id "CPU load" "$command_id"
-  log_step "CPU load command sent. Command ID: $command_id"
-}
-
-get_load_generator_instance_id() {
-  aws ec2 describe-instances \
-    --filters \
-      "Name=tag:asg-load-generator,Values=true" \
-      "Name=tag:role,Values=load-generator" \
-      "Name=instance-state-name,Values=running" \
-    --query "Reservations[].Instances[].InstanceId | [0]" \
-    --output text
-}
-
-get_load_balancer_dns_name() {
-  local load_balancer_arn
-
-  load_balancer_arn=$(aws resourcegroupstaggingapi get-resources \
-    --tag-filters Key=asg-loadbalancer,Values=true Key=role,Values=loadbalancer \
-    --resource-type-filters elasticloadbalancing:loadbalancer \
-    --query "ResourceTagMappingList[0].ResourceARN" \
-    --output text)
-
-  if [[ -z "$load_balancer_arn" || "$load_balancer_arn" == "None" ]]; then
-    echo "No load balancer found with tags asg-loadbalancer=true and role=loadbalancer." >&2
-    exit 1
+  log_step "Starting low phase ${cycle}/${CYCLES}."
+  if [[ "$RUN_CPU" == true ]]; then
+    run_cpu_phase "$cycle" low "$LOW_DURATION" 5
   fi
-
-  aws elbv2 describe-load-balancers \
-    --load-balancer-arns "$load_balancer_arn" \
-    --query "LoadBalancers[0].DNSName" \
-    --output text
-}
-
-run_request_load() {
-  # Baseline HTTP load runs continuously via ab-load.service on the load generator; this SSM
-  # run adds a bounded spike (timeout … ab …) on top of that service.
-  local load_generator_instance_id
-  local alb_dns
-  local ab_command
-  local command_id
-
-  log_step "Finding running load generator instance..."
-  load_generator_instance_id=$(get_load_generator_instance_id)
-
-  if [[ -z "$load_generator_instance_id" || "$load_generator_instance_id" == "None" ]]; then
-    echo "No running EC2 instance found with tags asg-load-generator=true and role=load-generator." >&2
-    exit 1
+  if [[ "$RUN_REQUESTS" == true && "$WAIT_FOR_LOW_PHASE" == true ]]; then
+    run_request_phase "$cycle" low "$LOW_DURATION" "$LOW_REQUEST_COUNT" "$LOW_CONCURRENCY"
+    sleep "$LOW_DURATION"
+  else
+    sleep "$LOW_DURATION"
   fi
-
-  log_step "Found load generator instance: $load_generator_instance_id"
-  log_step "Finding load balancer DNS name from tags..."
-  alb_dns=$(get_load_balancer_dns_name)
-  log_step "Found load balancer DNS name: $alb_dns"
-
-  log_step "Building Apache Bench command for ${DURATION} seconds, ${REQUEST_COUNT} requests, and concurrency ${CONCURRENCY}..."
-  ab_command="timeout ${DURATION} ab -n ${REQUEST_COUNT} -c ${CONCURRENCY} http://${alb_dns}/ > /dev/null 2>&1 &"
-  log_step "Apache Bench command: $ab_command"
-
-  log_step "Sending request load command with SSM..."
-  command_id=$(aws ssm send-command \
-    --document-name "AWS-RunShellScript" \
-    --instance-ids "$load_generator_instance_id" \
-    --parameters "commands=[
-      \"echo Starting background Apache Bench load for ${DURATION} seconds...\",
-      \"${ab_command}\",
-      \"echo Apache Bench started in background.\"
-    ]" \
-    --max-errors "1" \
-    --comment "Run Apache Bench in background from load generator instance" \
-    --query "Command.CommandId" \
-    --output text)
-
-  record_command_id "Request load" "$command_id"
-  log_step "Request load command sent. Command ID: $command_id"
-}
-
-log_step "Load generator configuration: duration=${DURATION}s, cpu=${RUN_CPU}, requests=${RUN_REQUESTS}, request_count=${REQUEST_COUNT}, concurrency=${CONCURRENCY}"
-
-if [[ "$RUN_CPU" == true ]]; then
-  run_cpu_load
-fi
-
-if [[ "$RUN_REQUESTS" == true ]]; then
-  run_request_load
-fi
+done
 
 print_command_summary
