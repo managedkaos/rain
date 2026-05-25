@@ -8,3 +8,13 @@
 6. asg-with-parameters.yml
 7. asg-public-instances-default-vpc.yml
 8. asg-public-instances-custom-vpc.yml - removing load generation control to script
+
+
+## Demonstraions
+
+| Scenario | Description |
+|----------|-------------|
+| Normal scaling | 30 minute response to 10 minute spike |
+| Over scaling | 30+ minute reponse to 10 minue spike |
+| Under scaling | scaling in before the spike completes |
+| Oscillating | scaling in and out indeterminately |
