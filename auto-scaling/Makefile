@@ -37,7 +37,7 @@ validate: ## Validate CloudFormation templates using AWS CLI
 		aws cloudformation validate-template --template-body file://$$template > /dev/null; \
 	done
 
-make-executable: ## Make load-generator.sh executable
+executable: ## Make load-generator.sh executable
 	@chmod +x load-generator.sh
 
 cpu-spike: make-executable ## Create a single CPU spike
@@ -93,5 +93,8 @@ mixed-cycle: make-executable ## Create combined CPU + HTTP cycles
 	  --low-concurrency $(REQUEST_LOW_CONCURRENCY) \
 	  --low-request-count $(REQUEST_LOW_COUNT) \
 	  --wait-for-low-phase
+
+reset-asg: make-executable ## Reset ASG to clear any scaling effects
+	./load-generator.sh --reset-asg
 
 .PHONY: help make-executable cpu-spike cpu-cycle request-spike request-cycle mixed-spike mixed-cycle

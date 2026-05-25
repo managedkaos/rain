@@ -38,6 +38,7 @@ Options:
   --low-concurrency COUNT      Apache Bench concurrency during low phase. Defaults to 5.
   --low-request-count COUNT    Apache Bench request count during low phase. Defaults to 1000.
   --wait-for-low-phase         Run a bounded low request phase instead of sleeping idle.
+  --reset-asg                  Set the first Auto Scaling group in the active region to desired capacity 1.
   -h, --help                   Show this help.
 
 Examples:
@@ -135,6 +136,25 @@ get_load_balancer_dns_name() {
   aws elbv2 describe-load-balancers     --load-balancer-arns "$load_balancer_arn"     --query 'LoadBalancers[0].DNSName'     --output text
 }
 
+reset_first_autoscaling_group() {
+  local asg_name
+
+  asg_name=$(aws autoscaling describe-auto-scaling-groups \
+    --query 'AutoScalingGroups[0].AutoScalingGroupName' \
+    --output text)
+
+  if [[ -z "$asg_name" || "$asg_name" == 'None' ]]; then
+    echo 'No Auto Scaling groups found in the active region.' >&2
+    exit 1
+  fi
+
+  log_step "Setting desired capacity to 1 for Auto Scaling group ${asg_name}."
+  aws autoscaling set-desired-capacity \
+    --auto-scaling-group-name "$asg_name" \
+    --desired-capacity 1 \
+    --no-honor-cooldown
+}
+
 send_ssm_shell_command() {
   local label=$1
   shift
@@ -220,6 +240,13 @@ EOF
   log_step "Sending request ${phase} phase for cycle ${cycle} via load generator ${load_generator_instance_id}."
   send_ssm_shell_command "Requests ${phase} cycle ${cycle}" "Run request ${phase} phase for cycle ${cycle}" "$load_generator_instance_id" "$cmd"
 }
+
+for arg in "$@"; do
+  if [[ "$arg" == '--reset-asg' ]]; then
+    reset_first_autoscaling_group
+    exit 0
+  fi
+done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
