@@ -97,4 +97,7 @@ mixed-cycle: make-executable ## Create combined CPU + HTTP cycles
 reset-asg: make-executable ## Reset ASG desired-capacity to '1' to clear any scaling effects
 	./load-generator.sh --reset-asg
 
-.PHONY: help make-executable cpu-spike cpu-cycle request-spike request-cycle mixed-spike mixed-cycle
+clean: ## Remove the package.zip file
+	rm -vf package.zip
+
+.PHONY: help make-executable cpu-spike cpu-cycle request-spike request-cycle mixed-spike mixed-cycle reset-asg clean

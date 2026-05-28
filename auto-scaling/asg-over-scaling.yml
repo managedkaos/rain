@@ -10,7 +10,7 @@ Parameters:
 
   AsgMaxSize:
     Type: Number
-    Default: 10
+    Default: 6
     MinValue: 1
     Description: Maximum number of EC2 instances in the Auto Scaling group
 
