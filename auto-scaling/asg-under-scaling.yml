@@ -1,5 +1,5 @@
 ---
-Description: Same VPC/ALB/ASG/load-generator stack as the step-scaling template, but purposely tuned to under-scale. High scale-out thresholds, multiple evaluation periods, small positive step adjustments, long cooldowns, and aggressive scale-in behavior make the ASG lag behind sustained load and shed capacity too early. All EC2s run Amazon Linux 2023.
+Description: ASG tuned to under-scale. High scale-out thresholds, multiple evaluation periods, small positive step adjustments, long cooldowns, and aggressive scale-in behavior make the ASG lag behind sustained load and shed capacity too early.
 
 Parameters:
   AsgMinSize:

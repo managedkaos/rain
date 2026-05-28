@@ -1,5 +1,5 @@
 ---
-Description: Same VPC/ALB/ASG/load-generator stack as the custom-vpc template, but CPU step scaling only (CloudWatch alarms on AWS/EC2 CPUUtilization for the ASG). No ALB request-count auto scaling. Short Period and Cooldown defaults for responsive demos; lowering evaluation periods or thresholds increases thrash risk. All EC2s run Amazon Linux 2023.
+Description: ASG with CPU step scaling only (CloudWatch alarms on AWS/EC2 CPUUtilization for the ASG). No ALB request-count auto scaling. Short Period and Cooldown defaults for responsive demos.
 
 Parameters:
   AsgMinSize:
