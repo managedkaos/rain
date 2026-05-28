@@ -1,5 +1,5 @@
 ---
-Description: VPC/ALB/ASG/load-generator stack for repeatable Auto Scaling demonstrations. Supports CPU step scaling and optional ALB request-count target tracking. Includes optional oscillation-lab settings with tighter thresholds, shorter warmup/cooldown, and deterministic load generation hooks.
+Description: ASG tuned for CPU oscillation under request load. CPU step scaling only (no ALB request-count tracking). Narrow threshold band and symmetric ±1 step adjustments encourage scale-out/scale-in cycles during make request-spike.
 
 Parameters:
   AsgMinSize:
@@ -16,7 +16,7 @@ Parameters:
 
   CpuScaleOutThreshold:
     Type: Number
-    Default: 55
+    Default: 50
     MinValue: 1
     MaxValue: 100
     Description: Average ASG CPU percent above which the high CPU alarm fires.
@@ -44,27 +44,27 @@ Parameters:
 
   CpuScaleInEvaluationPeriods:
     Type: Number
-    Default: 1
+    Default: 2
     MinValue: 1
     MaxValue: 10
     Description: Consecutive breaching periods before the scale-in alarm triggers.
 
   CpuStepScalingCooldown:
     Type: Number
-    Default: 30
+    Default: 60
     MinValue: 0
     MaxValue: 600
     Description: Seconds between allowed scaling activities for CPU step scaling.
 
   HealthCheckGracePeriod:
     Type: Number
-    Default: 60
+    Default: 120
     MinValue: 0
     Description: Grace period in seconds before ELB health checks affect new instances.
 
   DefaultInstanceWarmup:
     Type: Number
-    Default: 60
+    Default: 90
     MinValue: 0
     Description: Default instance warmup in seconds for scaling metrics.
 
@@ -76,7 +76,7 @@ Parameters:
 
   EnableAlbRequestScaling:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Enable target tracking on ALBRequestCountPerTarget in addition to CPU step scaling.
 
@@ -88,7 +88,7 @@ Parameters:
 
   BaselineAlbTrafficEnabled:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Start a low-rate baseline request loop on the load generator instance at boot.
 
@@ -355,7 +355,7 @@ Resources:
             - Key: ResourceGroup
               Value: !Sub ${AWS::StackName}-rg
       LaunchTemplateData:
-        ImageId: resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
         InstanceType: t3.small
         IamInstanceProfile:
           Name: !Ref Profile
@@ -550,10 +550,7 @@ Resources:
       EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalLowerBound: 0
-          MetricIntervalUpperBound: 10
           ScalingAdjustment: 1
-        - MetricIntervalLowerBound: 10
-          ScalingAdjustment: 2
 
   CpuStepScaleInPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
@@ -621,7 +618,7 @@ Resources:
   LoadGeneratorInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
       InstanceType: t3.small
       Monitoring: true
       IamInstanceProfile: !Ref Profile
@@ -687,6 +684,110 @@ Resources:
             systemctl disable --now ab-load.service || true
           fi
 
+  PerformanceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}-performance
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Maximum", "period": 60 } ]
+                ],
+                "annotations": {
+                  "horizontal": [
+                    { "value": ${CpuScaleOutThreshold}, "label": "Scale-out threshold", "color": "#d62728", "fill": "none", "visible": true },
+                    { "value": ${CpuScaleInThreshold}, "label": "Scale-in threshold", "color": "#2ca02c", "fill": "none", "visible": true }
+                  ]
+                },
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (ASG Aggregate)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ { "expression": "SEARCH('{AWS/EC2,InstanceId} MetricName=\"CPUUtilization\"', 'Maximum', 60)", "id": "e1", "label": " " } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (Per Instance)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Request Count",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Target Response Time",
+                "period": 60
+              }
+            }
+          ]
+        }
+
   StackResourceGroup:
     Type: AWS::ResourceGroups::Group
     Properties:
@@ -711,13 +812,17 @@ Outputs:
     Description: Auto Scaling Group name
     Value: !Ref AutoScalingGroup
 
+  PerformanceDashboardName:
+    Description: CloudWatch dashboard for ASG/EC2/ALB performance
+    Value: !Ref PerformanceDashboard
+
   LoadGeneratorInstanceId:
     Description: Instance ID of the load generator
     Value: !Ref LoadGeneratorInstance
 
   OscillationLabSuggestedOverrides:
     Description: Suggested parameters for a volatile oscillation demo
-    Value: CpuScaleOutThreshold=55,CpuScaleInThreshold=45,CpuStepScalingCooldown=30,DefaultInstanceWarmup=60,HealthCheckGracePeriod=60,EnableContinuousCpuNoise=false,BaselineAlbTrafficEnabled=false,EnableAlbRequestScaling=true
+    Value: CpuScaleOutThreshold=50,CpuScaleInThreshold=45,CpuStepScalingCooldown=60,DefaultInstanceWarmup=90,HealthCheckGracePeriod=120,CpuScaleInEvaluationPeriods=2,EnableContinuousCpuNoise=false,BaselineAlbTrafficEnabled=false,EnableAlbRequestScaling=false
 
   LoadGeneratorSsmCommand:
     Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root

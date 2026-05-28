@@ -30,14 +30,14 @@ Parameters:
 
   CpuScaleOutThreshold:
     Type: Number
-    Default: 55
+    Default: 50
     MinValue: 1
     MaxValue: 100
     Description: Average ASG CPU percent above which scale-out alarm fires.
 
   CpuScaleInThreshold:
     Type: Number
-    Default: 35
+    Default: 42
     MinValue: 1
     MaxValue: 100
     Description: Average ASG CPU percent below which scale-in alarm fires.
@@ -51,7 +51,7 @@ Parameters:
 
   CpuScaleOutEvaluationPeriods:
     Type: Number
-    Default: 2
+    Default: 1
     MinValue: 1
     MaxValue: 10
     Description: Consecutive breaching periods before scale-out alarm triggers.
@@ -65,20 +65,20 @@ Parameters:
 
   CpuStepScalingCooldown:
     Type: Number
-    Default: 120
+    Default: 90
     MinValue: 0
     MaxValue: 900
     Description: Cooldown in seconds for step scaling policies.
 
   HealthCheckGracePeriod:
     Type: Number
-    Default: 180
+    Default: 120
     MinValue: 0
     Description: Grace period in seconds before ELB health checks affect new instances.
 
   DefaultInstanceWarmup:
     Type: Number
-    Default: 180
+    Default: 120
     MinValue: 0
     Description: Default instance warmup in seconds for scaling metrics.
 
@@ -116,6 +116,19 @@ Parameters:
     MinValue: 0
     MaxValue: 5000
     Description: Delay between /work requests per worker on the load generator.
+
+  EnableBuiltInLoad:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: When true, start built-in /stream and /work load on the load generator. Set false for make request-spike.
+
+  IndexCpuMs:
+    Type: Number
+    Default: 250
+    MinValue: 0
+    MaxValue: 5000
+    Description: CPU work in milliseconds for each / request when EnableBuiltInLoad is false.
 
   KeyName:
     Type: String
@@ -376,6 +389,8 @@ Resources:
         - !Ref PublicSubnetA
         - !Ref PublicSubnetB
       Tags:
+        - Key: asg-loadbalancer
+          Value: true
         - Key: role
           Value: loadbalancer
         - Key: ResourceGroup
@@ -437,6 +452,8 @@ Resources:
             Tags:
               - Key: Name
                 Value: !Sub ${AWS::StackName}-asg-webserver
+              - Key: asg-webserver
+                Value: true
               - Key: role
                 Value: webserver
               - Key: ResourceGroup
@@ -495,6 +512,7 @@ Resources:
             STACK_NAME = os.environ.get("STACK_NAME", "unknown")
             STREAM_HOLD_SECONDS = int(os.environ.get("STREAM_HOLD_SECONDS", "240"))
             WORK_CPU_MS = int(os.environ.get("WORK_CPU_MS", "250"))
+            INDEX_CPU_MS = int(os.environ.get("INDEX_CPU_MS", "0"))
 
             active_streams = 0
             total_streams = 0
@@ -511,6 +529,7 @@ Resources:
                 return loops
 
             async def index(request: web.Request) -> web.Response:
+                index_loops = cpu_burn(INDEX_CPU_MS) if INDEX_CPU_MS > 0 else 0
                 payload = {
                     "instance_id": INSTANCE_ID,
                     "availability_zone": AVAILABILITY_ZONE,
@@ -520,6 +539,8 @@ Resources:
                     "active_streams": active_streams,
                     "total_streams": total_streams,
                     "total_work_requests": total_work,
+                    "index_cpu_burn_ms": INDEX_CPU_MS,
+                    "index_loops": index_loops,
                     "endpoints": {
                         "/": "instance details and counters",
                         "/health": "target group health check",
@@ -602,6 +623,15 @@ Resources:
                 web.run_app(app, host='127.0.0.1', port=8080)
             PYAPP
 
+            rm -f /etc/nginx/conf.d/default.conf
+            nginx -t
+
+            if [[ '${EnableBuiltInLoad}' == 'true' ]]; then
+              INDEX_CPU_MS=0
+            else
+              INDEX_CPU_MS=${IndexCpuMs}
+            fi
+
             cat > /etc/systemd/system/sse-demo.service <<SVC
             [Unit]
             Description=SSE hold demo web application
@@ -613,6 +643,7 @@ Resources:
             Environment=STACK_NAME=${AWS::StackName}
             Environment=STREAM_HOLD_SECONDS=${StreamHoldSeconds}
             Environment=WORK_CPU_MS=${WorkCpuMs}
+            Environment=INDEX_CPU_MS=$INDEX_CPU_MS
             WorkingDirectory=/opt/sse-demo
             ExecStart=/usr/local/bin/gunicorn --workers 1 --worker-class aiohttp.GunicornWebWorker --bind 127.0.0.1:8080 app:app
             Restart=always
@@ -677,9 +708,14 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MetricsCollection:
+        - Granularity: '1Minute'
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-asg-webserver
+          PropagateAtLaunch: true
+        - Key: asg-webserver
+          Value: true
           PropagateAtLaunch: true
         - Key: role
           Value: webserver
@@ -696,12 +732,10 @@ Resources:
       AdjustmentType: ChangeInCapacity
       Cooldown: !Ref CpuStepScalingCooldown
       MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalLowerBound: 0
-          MetricIntervalUpperBound: 15
           ScalingAdjustment: 1
-        - MetricIntervalLowerBound: 15
-          ScalingAdjustment: 2
 
   ScaleInPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
@@ -711,12 +745,10 @@ Resources:
       AdjustmentType: ChangeInCapacity
       Cooldown: !Ref CpuStepScalingCooldown
       MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalUpperBound: 0
-          MetricIntervalLowerBound: -15
           ScalingAdjustment: -1
-        - MetricIntervalUpperBound: -15
-          ScalingAdjustment: -2
 
   CpuScaleOutAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -729,12 +761,12 @@ Resources:
       EvaluationPeriods: !Ref CpuScaleOutEvaluationPeriods
       Threshold: !Ref CpuScaleOutThreshold
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
       AlarmActions:
         - !Ref ScaleOutPolicy
       Dimensions:
         - Name: AutoScalingGroupName
           Value: !Ref AutoScalingGroup
-      TreatMissingData: missing
 
   CpuScaleInAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -747,12 +779,12 @@ Resources:
       EvaluationPeriods: !Ref CpuScaleInEvaluationPeriods
       Threshold: !Ref CpuScaleInThreshold
       ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
       AlarmActions:
         - !Ref ScaleInPolicy
       Dimensions:
         - Name: AutoScalingGroupName
           Value: !Ref AutoScalingGroup
-      TreatMissingData: missing
 
   LoadGeneratorInstance:
     Type: AWS::EC2::Instance
@@ -767,6 +799,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-loadgen
+        - Key: asg-load-generator
+          Value: true
         - Key: role
           Value: load-generator
         - Key: ResourceGroup
@@ -776,7 +810,7 @@ Resources:
           #!/bin/bash -xe
           exec > >(tee /var/log/user-data.log) 2>&1
 
-          dnf install -y python3 python3-pip jq
+          dnf install -y python3 python3-pip jq httpd-tools
           python3 -m pip install --upgrade pip
           python3 -m pip install aiohttp
 
@@ -851,7 +885,11 @@ Resources:
           SVC
 
           systemctl daemon-reload
-          systemctl enable --now loadgen.service
+          if [[ '${EnableBuiltInLoad}' == 'true' ]]; then
+            systemctl enable --now loadgen.service
+          else
+            systemctl disable --now loadgen.service || true
+          fi
 
 Outputs:
   AlbUrl:
@@ -877,5 +915,6 @@ Outputs:
   SuggestedObservation:
     Description: What to observe during the demo.
     Value: >-
-      Watch ASGAverageCPUUtilization, group desired capacity, and per-instance behavior. Old instances can retain long-lived
-      /stream clients while new instances enter service, causing average CPU to remain elevated long enough to overshoot.
+      Built-in load (EnableBuiltInLoad=true): watch SSE stickiness on /stream, per-instance CPU skew, and capacity oscillation
+      from pinned connections. Request-spike mode (EnableBuiltInLoad=false): run make request-spike; / performs CPU work and
+      the ASG should oscillate on average CPU between scale-out (50%) and scale-in (42%) thresholds.
