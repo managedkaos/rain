@@ -1,115 +1,83 @@
 ---
-Description: VPC/ALB/ASG/load-generator stack for repeatable Auto Scaling demonstrations. Supports CPU step scaling and optional ALB request-count target tracking. Includes optional oscillation-lab settings with tighter thresholds, shorter warmup/cooldown, and deterministic load generation hooks.
+Description: Same VPC/ALB/ASG/load-generator stack as the step-scaling template, but purposely tuned to over-scale. Low scale-out thresholds, large positive step adjustments, short cooldown, and slow scale-in behavior make the ASG add too many instances for short CPU spikes and keep excess capacity running. All EC2s run Amazon Linux 2023.
 
 Parameters:
   AsgMinSize:
     Type: Number
     Default: 1
     MinValue: 1
-    Description: Minimum number of EC2 instances in the Auto Scaling group.
+    Description: Minimum number of EC2 instances; also the initial desired capacity on stack create (DesiredCapacity is not set on the ASG so updates do not overwrite scaling)
 
   AsgMaxSize:
     Type: Number
-    Default: 6
+    Default: 10
     MinValue: 1
-    Description: Maximum number of EC2 instances in the Auto Scaling group.
+    Description: Maximum number of EC2 instances in the Auto Scaling group
 
   CpuScaleOutThreshold:
-    Type: Number
-    Default: 55
-    MinValue: 1
-    MaxValue: 100
-    Description: Average ASG CPU percent above which the high CPU alarm fires.
-
-  CpuScaleInThreshold:
     Type: Number
     Default: 45
     MinValue: 1
     MaxValue: 100
-    Description: Average ASG CPU percent below which the low CPU alarm fires.
+    Description: Low average ASG CPU percent above which scale-out alarm fires early, encouraging over-scaling
+
+  CpuScaleInThreshold:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+    Description: Very low average ASG CPU percent below which scale-in alarm fires, keeping excess capacity longer
 
   CpuScalingPeriod:
     Type: Number
     Default: 60
     MinValue: 60
     MaxValue: 300
-    Description: CloudWatch period in seconds for CPU alarms.
+    Description: CloudWatch period in seconds for CPU alarms (60 aligns with detailed monitoring on instances)
 
   CpuScaleOutEvaluationPeriods:
     Type: Number
     Default: 1
     MinValue: 1
     MaxValue: 10
-    Description: Consecutive breaching periods before the scale-out alarm triggers.
+    Description: Consecutive breaching periods before scale-out alarm triggers
 
   CpuScaleInEvaluationPeriods:
     Type: Number
-    Default: 1
+    Default: 5
     MinValue: 1
     MaxValue: 10
-    Description: Consecutive breaching periods before the scale-in alarm triggers.
+    Description: Consecutive breaching periods before scale-in alarm triggers; intentionally high to delay scale-in
 
   CpuStepScalingCooldown:
     Type: Number
     Default: 30
     MinValue: 0
     MaxValue: 600
-    Description: Seconds between allowed scaling activities for CPU step scaling.
+    Description: Short cooldown allows repeated scale-out activities during brief spikes
 
   HealthCheckGracePeriod:
     Type: Number
-    Default: 60
+    Default: 120
     MinValue: 0
-    Description: Grace period in seconds before ELB health checks affect new instances.
+    Description: Grace period in seconds before ELB health checks affect new instances
 
   DefaultInstanceWarmup:
     Type: Number
-    Default: 60
+    Default: 30
     MinValue: 0
-    Description: Default instance warmup in seconds for scaling metrics.
-
-  EnableContinuousCpuNoise:
-    Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Enable a low-level background CPU load service on each ASG instance. Keep false for deterministic oscillation experiments.
-
-  EnableAlbRequestScaling:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: Enable target tracking on ALBRequestCountPerTarget in addition to CPU step scaling.
-
-  AlbRequestTargetValue:
-    Type: Number
-    Default: 75
-    MinValue: 1
-    Description: Target ALB requests per minute per target used by request-count target tracking.
-
-  BaselineAlbTrafficEnabled:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: Start a low-rate baseline request loop on the load generator instance at boot.
-
-Conditions:
-  EnableContinuousCpuNoiseCondition: !Equals [!Ref EnableContinuousCpuNoise, 'true']
-  EnableAlbRequestScalingCondition: !Equals [!Ref EnableAlbRequestScaling, 'true']
-  BaselineAlbTrafficEnabledCondition: !Equals [!Ref BaselineAlbTrafficEnabled, 'true']
+    Description: Short warmup lets new instances count quickly, allowing additional aggressive scale-out actions
 
 Resources:
   Role:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - ec2.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
@@ -122,8 +90,7 @@ Resources:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: /
-      Roles:
-        - !Ref Role
+      Roles: [!Ref Role]
 
   Vpc:
     Type: AWS::EC2::VPC
@@ -158,12 +125,12 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.0.0.0/24
       MapPublicIpOnLaunch: true
-      VpcId: !Ref Vpc
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-public-a
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -171,12 +138,12 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
-      VpcId: !Ref Vpc
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-public-b
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
@@ -184,12 +151,12 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.0.10.0/24
       MapPublicIpOnLaunch: false
-      VpcId: !Ref Vpc
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-private-a
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -197,12 +164,12 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.0.11.0/24
       MapPublicIpOnLaunch: false
-      VpcId: !Ref Vpc
       Tags:
         - Key: Name
           Value: !Sub ${AWS::StackName}-private-b
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
+      VpcId: !Ref Vpc
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -276,7 +243,7 @@ Resources:
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP traffic from the ALB to Auto Scaling Group instances
+      GroupDescription: Allow HTTP traffic from the ALB to the Auto Scaling Group instances
       VpcId: !Ref Vpc
       Tags:
         - Key: ResourceGroup
@@ -293,7 +260,7 @@ Resources:
   LoadGeneratorSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow outbound access from the load generator
+      GroupDescription: Allow outbound access to the ALB
       VpcId: !Ref Vpc
       Tags:
         - Key: ResourceGroup
@@ -306,15 +273,15 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internet-facing
-      Type: application
       SecurityGroups:
         - !Ref LoadBalancerSecurityGroup
       Subnets:
         - !Ref PublicSubnetA
         - !Ref PublicSubnetB
+      Type: application
       Tags:
         - Key: asg-loadbalancer
-          Value: 'true'
+          Value: true
         - Key: role
           Value: loadbalancer
         - Key: ResourceGroup
@@ -327,7 +294,7 @@ Resources:
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
       Matcher:
-        HttpCode: '200'
+        HttpCode: 200
       Port: 80
       Protocol: HTTP
       TargetType: instance
@@ -355,7 +322,7 @@ Resources:
             - Key: ResourceGroup
               Value: !Sub ${AWS::StackName}-rg
       LaunchTemplateData:
-        ImageId: resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
         InstanceType: t3.small
         IamInstanceProfile:
           Name: !Ref Profile
@@ -374,20 +341,21 @@ Resources:
               - Key: Name
                 Value: !Sub ${AWS::StackName}-asg-webserver
               - Key: asg-webserver
-                Value: 'true'
+                Value: true
               - Key: role
                 Value: webserver
               - Key: ResourceGroup
                 Value: !Sub ${AWS::StackName}-rg
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash -xe
-            exec > >(tee /var/log/user-data.log | logger -t user-data) 2>&1
 
-            dnf install -y stress-ng amazon-cloudwatch-agent python3
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng amazon-cloudwatch-agent -y
 
             mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
-            cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
             {
               "metrics": {
                 "metrics_collected": {
@@ -404,26 +372,26 @@ Resources:
               }
             }
             CWAGENT
+
             systemctl enable amazon-cloudwatch-agent
-            systemctl start amazon-cloudwatch-agent
             systemctl enable amazon-ssm-agent
+            systemctl start amazon-cloudwatch-agent
             systemctl start amazon-ssm-agent
 
-            cat >/usr/local/bin/cpu-load.sh <<'CPULOAD'
-            #!/usr/bin/env bash
-            set -euo pipefail
+            cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
+            #!/bin/bash
             while true; do
-              LOAD=$(( (RANDOM % 20) + 25 ))
-              DURATION=$(( (RANDOM % 60) + 60 ))
-              stress-ng --cpu 1 --cpu-load "$LOAD" --cpu-method matrixprod --timeout "${!DURATION}s"
-              sleep 5
+              LOAD=$((RANDOM % 25 + 10))
+              DURATION=$((RANDOM % 60 + 120))
+              stress-ng --cpu 1 --cpu-load $LOAD --cpu-method matrixprod --timeout $DURATION
             done
             CPULOAD
+
             chmod +x /usr/local/bin/cpu-load.sh
 
-            cat >/etc/systemd/system/cpu-load.service <<'CPULOADSVC'
+            cat > /etc/systemd/system/cpu-load.service <<'CPULOADSVC'
             [Unit]
-            Description=Background CPU load simulator
+            Description=Sustained CPU load simulator
             After=network.target
 
             [Service]
@@ -436,58 +404,74 @@ Resources:
             WantedBy=multi-user.target
             CPULOADSVC
 
-            if [[ '${EnableContinuousCpuNoise}' == 'true' ]]; then
-              systemctl daemon-reload
-              systemctl enable --now cpu-load.service
-            else
-              systemctl daemon-reload
-              systemctl disable --now cpu-load.service || true
-            fi
+            systemctl daemon-reload
+            #systemctl enable --now cpu-load.service
 
-            appdir=/opt/web-application
-            mkdir -p "$appdir"
-            token=$(curl -sS -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')
-            instanceid=$(curl -sS -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/instance-id)
-            availabilityzone=$(curl -sS -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            app_dir=/opt/web-application
+            mkdir -p "$app_dir"
 
-            cat >"$appdir/index.html" <<HTML
+            token=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            instance_id=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            availability_zone=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            cat > "$app_dir/index.html" <<HTML
             <!doctype html>
             <html lang="en">
-              <head>
-                <meta charset="utf-8">
-                <title>Scaling AWS Compute Demo</title>
-                <style>
-                  body { font-family: Arial, sans-serif; margin: 2rem; background: #f7f9fc; color: #1f2937; }
-                  .card { max-width: 720px; background: #ffffff; padding: 2rem; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08); }
-                  code { background: #eef2ff; padding: 0.2rem 0.4rem; border-radius: 6px; }
-                </style>
-              </head>
-              <body>
-                <div class="card">
-                  <h1>Scaling AWS Compute Demo</h1>
-                  <p>This page is being served by an EC2 instance in an Auto Scaling Group behind an Application Load Balancer.</p>
-                  <p><strong>Instance ID:</strong> <code>${!instanceid}</code></p>
-                  <p><strong>Availability Zone:</strong> <code>${!availabilityzone}</code></p>
-                  <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
-                </div>
-              </body>
+            <head>
+              <meta charset="utf-8">
+              <title>Scaling AWS Compute Demo</title>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  margin: 2rem;
+                  background: #f7f9fc;
+                  color: #1f2937;
+                }
+                .card {
+                  max-width: 720px;
+                  background: #ffffff;
+                  padding: 2rem;
+                  border-radius: 12px;
+                  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+                }
+                code {
+                  background: #eef2ff;
+                  padding: 0.2rem 0.4rem;
+                  border-radius: 6px;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>Scaling AWS Compute Demo</h1>
+                <p>This page is being served by an EC2 instance in an Auto Scaling Group behind an Application Load Balancer.</p>
+                <p><strong>Instance ID:</strong> <code>$instance_id</code></p>
+                <p><strong>Availability Zone:</strong> <code>$availability_zone</code></p>
+                <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
+              </div>
+            </body>
             </html>
             HTML
 
-            cat >/usr/local/bin/web-application-server.py <<'PY'
+            cat > /usr/local/bin/web-application-server.py <<'PY'
+            #!/usr/bin/python3
             from http.server import HTTPServer, SimpleHTTPRequestHandler
             from socketserver import ThreadingMixIn
-            import os
+
 
             class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-                daemon_threads = True
+                pass
 
-            os.chdir('/opt/web-application')
-            ThreadedHTTPServer(('', 80), SimpleHTTPRequestHandler).serve_forever()
+
+            ThreadedHTTPServer(("", 80), SimpleHTTPRequestHandler).serve_forever()
             PY
+
             chmod +x /usr/local/bin/web-application-server.py
 
-            cat >/etc/systemd/system/web-application.service <<'SERVICE'
+            cat > /etc/systemd/system/web-application.service <<'SERVICE'
             [Unit]
             Description=Threaded HTTP server using Python3
             After=network-online.target
@@ -519,7 +503,7 @@ Resources:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
       MetricsCollection:
-        - Granularity: '1Minute'
+        - Granularity: "1Minute"
       TargetGroupARNs:
         - !Ref ApplicationTargetGroup
       VPCZoneIdentifier:
@@ -530,7 +514,7 @@ Resources:
           Value: !Sub ${AWS::StackName}-asg-webserver
           PropagateAtLaunch: true
         - Key: asg-webserver
-          Value: 'true'
+          Value: true
           PropagateAtLaunch: true
         - Key: role
           Value: webserver
@@ -538,6 +522,7 @@ Resources:
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
           PropagateAtLaunch: true
+
 
   CpuStepScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
@@ -550,10 +535,13 @@ Resources:
       EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalLowerBound: 0
-          MetricIntervalUpperBound: 10
-          ScalingAdjustment: 1
-        - MetricIntervalLowerBound: 10
+          MetricIntervalUpperBound: 5
           ScalingAdjustment: 2
+        - MetricIntervalLowerBound: 5
+          MetricIntervalUpperBound: 15
+          ScalingAdjustment: 4
+        - MetricIntervalLowerBound: 15
+          ScalingAdjustment: 6
 
   CpuStepScaleInPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
@@ -604,24 +592,10 @@ Resources:
       AlarmActions:
         - !Ref CpuStepScaleInPolicy
 
-  RequestTargetTrackingPolicy:
-    Type: AWS::AutoScaling::ScalingPolicy
-    Condition: EnableAlbRequestScalingCondition
-    Properties:
-      AutoScalingGroupName: !Ref AutoScalingGroup
-      PolicyType: TargetTrackingScaling
-      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
-      TargetTrackingConfiguration:
-        DisableScaleIn: false
-        TargetValue: !Ref AlbRequestTargetValue
-        PredefinedMetricSpecification:
-          PredefinedMetricType: ALBRequestCountPerTarget
-          ResourceLabel: !Sub "${ApplicationLoadBalancer.LoadBalancerFullName}/${ApplicationTargetGroup.TargetGroupFullName}"
-
   LoadGeneratorInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
       InstanceType: t3.small
       Monitoring: true
       IamInstanceProfile: !Ref Profile
@@ -637,55 +611,54 @@ Resources:
         - Key: Name
           Value: !Sub ${AWS::StackName}-load-generator
         - Key: asg-load-generator
-          Value: 'true'
+          Value: true
         - Key: role
           Value: load-generator
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
+
       UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          exec > >(tee /var/log/user-data.log | logger -t user-data) 2>&1
+        !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
 
-          dnf install -y httpd-tools git docker java-21-amazon-corretto python3 python3-pip amazon-cloudwatch-agent
-          systemctl enable amazon-cloudwatch-agent
-          systemctl start amazon-cloudwatch-agent
-          systemctl enable amazon-ssm-agent
-          systemctl start amazon-ssm-agent
+            dnf install -y httpd-tools git docker java-21-amazon-corretto python3-pip
 
-          cat >/usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          URL="http://${ApplicationLoadBalancer.DNSName}/"
-          while true; do
-            curl -fsS -o /dev/null "$URL" || true
-            sleep 2
-          done
-          SCRIPT
-          chmod +x /usr/local/bin/generate-alb-requests.sh
+            cat > /usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
+            #!/bin/bash
+            set -euo pipefail
+            URL="http://${ApplicationLoadBalancer.DNSName}/"
+            while true; do
+              curl -s -o /dev/null $URL
+              sleep 1
+            done
+            SCRIPT
 
-          cat >/etc/systemd/system/ab-load.service <<'SERVICE'
-          [Unit]
-          Description=Low baseline ALB request generator
-          After=network-online.target
-          Wants=network-online.target
+            chmod +x /usr/local/bin/generate-alb-requests.sh
 
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/generate-alb-requests.sh
-          Restart=always
-          RestartSec=5
+            cat > /etc/systemd/system/ab-load.service <<'SERVICE'
+            [Unit]
+            Description=Apache Bench load generator against the ALB
+            After=network-online.target
+            Wants=network-online.target
 
-          [Install]
-          WantedBy=multi-user.target
-          SERVICE
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/generate-alb-requests.sh
+            Restart=always
+            RestartSec=5
 
-          systemctl daemon-reload
-          if [[ '${BaselineAlbTrafficEnabled}' == 'true' ]]; then
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
             systemctl enable --now ab-load.service
-          else
-            systemctl disable --now ab-load.service || true
-          fi
+            systemctl enable amazon-cloudwatch-agent
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-cloudwatch-agent
+            systemctl start amazon-ssm-agent
 
   StackResourceGroup:
     Type: AWS::ResourceGroups::Group
@@ -695,9 +668,9 @@ Resources:
       ResourceQuery:
         Type: CLOUDFORMATION_STACK_1_0
         Query:
-          StackIdentifier: !Ref AWS::StackId
           ResourceTypeFilters:
             - AWS::AllSupported
+          StackIdentifier: !Ref AWS::StackId
       Tags:
         - Key: ResourceGroup
           Value: !Sub ${AWS::StackName}-rg
@@ -705,20 +678,17 @@ Resources:
 Outputs:
   AlbURL:
     Description: Application Load Balancer URL
-    Value: !Sub http://${ApplicationLoadBalancer.DNSName}
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
 
   AutoScalingGroupName:
     Description: Auto Scaling Group name
     Value: !Ref AutoScalingGroup
 
   LoadGeneratorInstanceId:
-    Description: Instance ID of the load generator
+    Description: Instance ID of the Apache Bench load generator instance
     Value: !Ref LoadGeneratorInstance
-
-  OscillationLabSuggestedOverrides:
-    Description: Suggested parameters for a volatile oscillation demo
-    Value: CpuScaleOutThreshold=55,CpuScaleInThreshold=45,CpuStepScalingCooldown=30,DefaultInstanceWarmup=60,HealthCheckGracePeriod=60,EnableContinuousCpuNoise=false,BaselineAlbTrafficEnabled=false,EnableAlbRequestScaling=true
 
   LoadGeneratorSsmCommand:
     Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
-    Value: !Sub aws ssm start-session --target ${LoadGeneratorInstance}
+    Value: !Sub |
+      aws ssm start-session --target ${LoadGeneratorInstance}
