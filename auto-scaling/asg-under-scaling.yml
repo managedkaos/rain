@@ -660,6 +660,110 @@ Resources:
             systemctl start amazon-cloudwatch-agent
             systemctl start amazon-ssm-agent
 
+  PerformanceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}-performance
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Maximum", "period": 60 } ]
+                ],
+                "annotations": {
+                  "horizontal": [
+                    { "value": ${CpuScaleOutThreshold}, "label": "Scale-out threshold", "color": "#d62728", "fill": "none", "visible": true },
+                    { "value": ${CpuScaleInThreshold}, "label": "Scale-in threshold", "color": "#2ca02c", "fill": "none", "visible": true }
+                  ]
+                },
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (ASG Aggregate)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ { "expression": "SEARCH('{AWS/EC2,InstanceId} MetricName=\"CPUUtilization\"', 'Maximum', 60)", "id": "e1", "label": " " } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (Per Instance)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Request Count",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Target Response Time",
+                "period": 60
+              }
+            }
+          ]
+        }
+
   StackResourceGroup:
     Type: AWS::ResourceGroups::Group
     Properties:
@@ -683,6 +787,10 @@ Outputs:
   AutoScalingGroupName:
     Description: Auto Scaling Group name
     Value: !Ref AutoScalingGroup
+
+  PerformanceDashboardName:
+    Description: CloudWatch dashboard for ASG/EC2/ALB performance
+    Value: !Ref PerformanceDashboard
 
   LoadGeneratorInstanceId:
     Description: Instance ID of the Apache Bench load generator instance

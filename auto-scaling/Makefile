@@ -1,8 +1,8 @@
 TEMPLATES ?= $(shell find . -name '*.yml' 2>/dev/null)
 
 DURATION ?= 600
-REQUESTS ?= 10000000
-CONCURRENCY ?= 1000
+REQUESTS ?= 500000
+CONCURRENCY ?= 300
 CPU_LOAD ?= 90
 CPU_WORKERS ?= 0
 
