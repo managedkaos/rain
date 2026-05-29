@@ -98,7 +98,6 @@ reset-asg: make-executable ## Reset ASG desired-capacity to '1' to clear any sca
 	./load-generator.sh --reset-asg
 
 oscillation-spike: make-executable ## Run request-spike against asg-oscillation stack (optional reset first)
-	./load-generator.sh --reset-asg
 	./load-generator.sh --requests $(REQUESTS) \
 	  --cycles 1 \
 	  --high-duration $(DURATION) \
@@ -114,6 +113,10 @@ oscillation-cycle: make-executable ## Run repeated request high/low cycles for c
 	  --low-concurrency $(REQUEST_LOW_CONCURRENCY) \
 	  --low-request-count $(REQUEST_LOW_COUNT) \
 	  --wait-for-low-phase
+
+package: load-generator.sh Makefile ## Package load-generator.sh and Makefile into package.zip
+	@echo "Creating package.zip with load-generator.sh and Makefile..."
+	zip --junk-paths package.zip load-generator.sh Makefile
 
 clean: ## Remove the package.zip file
 	rm -vf package.zip
