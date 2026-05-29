@@ -28,7 +28,7 @@ Usage: $0 [options] [--cpu] [--requests]
 Options:
   --cpu                        Generate CPU load on running instances tagged role=webserver.
   --requests [COUNT]           Generate ALB request load from the load generator instance.
-                               Defaults to 1000000 requests for each high phase.
+                               Defaults to 500000 requests for each high phase.
   --cycles COUNT               Number of high/low cycles to run. Defaults to 4.
   --high-duration SECONDS      Length of each high-load phase. Defaults to 120.
   --low-duration SECONDS       Length of each low-load phase. Defaults to 90.
