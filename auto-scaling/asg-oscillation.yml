@@ -44,7 +44,7 @@ Parameters:
 
   CpuScaleInEvaluationPeriods:
     Type: Number
-    Default: 2
+    Default: 1
     MinValue: 1
     MaxValue: 10
     Description: Consecutive breaching periods before the scale-in alarm triggers.
@@ -88,7 +88,7 @@ Parameters:
 
   BaselineAlbTrafficEnabled:
     Type: String
-    Default: 'false'
+    Default: 'true'
     AllowedValues: ['true', 'false']
     Description: Start a low-rate baseline request loop on the load generator instance at boot.
 
@@ -563,7 +563,7 @@ Resources:
       EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalUpperBound: 0
-          ScalingAdjustment: -1
+          ScalingAdjustment: -3
 
   CpuHighAlarm:
     Type: AWS::CloudWatch::Alarm

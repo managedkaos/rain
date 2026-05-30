@@ -97,23 +97,6 @@ mixed-cycle: make-executable ## Create combined CPU + HTTP cycles
 reset-asg: make-executable ## Reset ASG desired-capacity to '1' to clear any scaling effects
 	./load-generator.sh --reset-asg
 
-oscillation-spike: make-executable ## Run request-spike against asg-oscillation stack (optional reset first)
-	./load-generator.sh --requests $(REQUESTS) \
-	  --cycles 1 \
-	  --high-duration $(DURATION) \
-	  --low-duration 60 \
-	  --high-concurrency $(CONCURRENCY)
-
-oscillation-cycle: make-executable ## Run repeated request high/low cycles for clearer oscillation
-	./load-generator.sh --requests $(REQUESTS) \
-	  --cycles $(REQUEST_CYCLE_COUNT) \
-	  --high-duration $(REQUEST_CYCLE_HIGH) \
-	  --low-duration $(REQUEST_CYCLE_LOW) \
-	  --high-concurrency $(CONCURRENCY) \
-	  --low-concurrency $(REQUEST_LOW_CONCURRENCY) \
-	  --low-request-count $(REQUEST_LOW_COUNT) \
-	  --wait-for-low-phase
-
 package: load-generator.sh Makefile ## Package load-generator.sh and Makefile into package.zip
 	@echo "Creating package.zip with load-generator.sh and Makefile..."
 	zip --junk-paths package.zip load-generator.sh Makefile

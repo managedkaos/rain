@@ -13,6 +13,7 @@ HIGH_CONCURRENCY=300
 LOW_CONCURRENCY=5
 LOW_REQUEST_COUNT=1000
 WAIT_FOR_LOW_PHASE=false
+PRINT_SUMMARY=false
 COMMAND_LABELS=()
 COMMAND_IDS=()
 
@@ -38,6 +39,7 @@ Options:
   --low-concurrency COUNT      Apache Bench concurrency during low phase. Defaults to 5.
   --low-request-count COUNT    Apache Bench request count during low phase. Defaults to 1000.
   --wait-for-low-phase         Run a bounded low request phase instead of sleeping idle.
+  --print-summary              Print SSM command IDs and status lookup commands after completion.
   --reset-asg                  Set the first Auto Scaling group in the active region to desired capacity 1.
   -h, --help                   Show this help.
 
@@ -299,6 +301,10 @@ while [[ $# -gt 0 ]]; do
       WAIT_FOR_LOW_PHASE=true
       shift
       ;;
+    --print-summary)
+      PRINT_SUMMARY=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -354,4 +360,6 @@ for ((cycle=1; cycle<=CYCLES; cycle++)); do
   fi
 done
 
-print_command_summary
+if [[ "$PRINT_SUMMARY" == true ]]; then
+  print_command_summary
+fi
