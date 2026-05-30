@@ -686,6 +686,44 @@ Resources:
               "type": "metric",
               "x": 0,
               "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Maximum", "period": 60, "label": "EC2 Max CPU (ASG Aggregate)", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity vs EC2 Max CPU (ASG Aggregate)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60, "label": "ALB Request Count", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity vs ALB Request Count",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 18,
               "width": 12,
               "height": 6,
               "properties": {
@@ -709,7 +747,7 @@ Resources:
             {
               "type": "metric",
               "x": 12,
-              "y": 6,
+              "y": 18,
               "width": 12,
               "height": 6,
               "properties": {
@@ -727,7 +765,7 @@ Resources:
             {
               "type": "metric",
               "x": 0,
-              "y": 12,
+              "y": 24,
               "width": 12,
               "height": 6,
               "properties": {
@@ -744,7 +782,7 @@ Resources:
             {
               "type": "metric",
               "x": 12,
-              "y": 12,
+              "y": 24,
               "width": 12,
               "height": 6,
               "properties": {
