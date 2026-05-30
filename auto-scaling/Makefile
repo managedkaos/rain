@@ -56,6 +56,14 @@ cpu-cycle: make-executable ## Create repeated CPU high/low cycles
 	  --cpu-load $(CPU_LOAD) \
 	  --cpu-workers $(CPU_WORKERS)
 
+cpu-noise: make-executable ## Create mixed cylcles of low and high CPU load to generate noise
+	$(MAKE) cpu-cycle CPU_CYCLE_COUNT=5 CPU_CYCLE_HIGH=30 CPU_CYCLE_LOW=30 && \
+	$(MAKE) cpu-cycle CPU_CYCLE_COUNT=5 CPU_CYCLE_HIGH=30 CPU_CYCLE_LOW=60 && \
+	$(MAKE) cpu-spike CPU_CYCLE_HIGH=60 && \
+	$(MAKE) cpu-cycle CPU_CYCLE_COUNT=5 CPU_CYCLE_HIGH=30 CPU_CYCLE_LOW=30 && \
+	$(MAKE) cpu-cycle CPU_CYCLE_COUNT=5 CPU_CYCLE_HIGH=30 CPU_CYCLE_LOW=60 && \
+	$(MAKE) cpu-spike CPU_CYCLE_HIGH=60
+
 request-spike: make-executable ## Create a single HTTP request spike
 	./load-generator.sh --requests $(REQUESTS) \
 	  --cycles 1 \
@@ -72,6 +80,7 @@ request-cycle: make-executable ## Create repeated HTTP request high/low cycles
 	  --low-concurrency $(REQUEST_LOW_CONCURRENCY) \
 	  --low-request-count $(REQUEST_LOW_COUNT) \
 	  --wait-for-low-phase
+
 
 mixed-spike: make-executable ## Create one combined CPU + HTTP spike
 	./load-generator.sh --cpu --requests $(REQUESTS) \
