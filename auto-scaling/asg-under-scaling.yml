@@ -16,14 +16,14 @@ Parameters:
 
   CpuScaleOutThreshold:
     Type: Number
-    Default: 85
+    Default: 70
     MinValue: 1
     MaxValue: 100
     Description: High average ASG CPU percent above which scale-out alarm fires late, encouraging under-scaling
 
   CpuScaleInThreshold:
     Type: Number
-    Default: 70
+    Default: 55
     MinValue: 1
     MaxValue: 100
     Description: High average ASG CPU percent below which scale-in alarm fires early, removing capacity during partially active spikes
