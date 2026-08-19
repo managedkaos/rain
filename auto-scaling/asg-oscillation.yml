@@ -93,9 +93,7 @@ Parameters:
     Description: Start a low-rate baseline request loop on the load generator instance at boot.
 
 Conditions:
-  EnableContinuousCpuNoiseCondition: !Equals [!Ref EnableContinuousCpuNoise, 'true']
   EnableAlbRequestScalingCondition: !Equals [!Ref EnableAlbRequestScaling, 'true']
-  BaselineAlbTrafficEnabledCondition: !Equals [!Ref BaselineAlbTrafficEnabled, 'true']
 
 Resources:
   Role:

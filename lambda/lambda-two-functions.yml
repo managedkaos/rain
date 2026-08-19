@@ -51,7 +51,7 @@ Resources:
     Properties:
       Description: The 'staging' environment for the sample application.
       FunctionName: !Sub ${AWS::StackName}-staging
-      Runtime: python3.10
+      Runtime: python3.14
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
@@ -144,7 +144,7 @@ Resources:
     Properties:
       Description: The 'production' environment for the sample application.
       FunctionName: !Sub ${AWS::StackName}-production
-      Runtime: python3.10
+      Runtime: python3.14
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:

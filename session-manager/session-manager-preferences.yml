@@ -1,0 +1,75 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Configure AWS SSM Session Manager Preferences'
+
+Resources:
+  SessionLogsBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'session-manager-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireSessionLogs
+            Status: Enabled
+            ExpirationInDays: 60
+
+  SessionLogsBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref SessionLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSSMWrite
+            Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action:
+              - 's3:PutObject'
+            Resource: !Sub '${SessionLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+
+  SessionLogsLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: '/aws/ssm/session-logs'
+      RetentionInDays: 60
+
+  SSMSessionPreferences:
+    Type: 'AWS::SSM::Document'
+    Properties:
+      Name: 'AWS-StartSSMSession-SessionPreferences'
+      DocumentType: 'Session'
+      DocumentFormat: 'JSON'
+      Content:
+        schemaVersion: '1.0'
+        description: 'Global Session Manager Preferences'
+        sessionType: 'Standard_Stream'
+        inputs:
+          idleSessionTimeout: '60'
+          s3BucketName: !Ref SessionLogsBucket
+          s3EncryptionEnabled: true
+          cloudWatchLogGroupName: !Ref SessionLogsLogGroup
+          cloudWatchEncryptionEnabled: true
+
+Outputs:
+  SessionLogsBucketName:
+    Description: S3 bucket for Session Manager logs
+    Value: !Ref SessionLogsBucket
+  SessionLogsBucketArn:
+    Description: ARN of the session logs bucket
+    Value: !GetAtt SessionLogsBucket.Arn
+  SessionLogsLogGroupName:
+    Description: CloudWatch Log Group for Session Manager logs
+    Value: !Ref SessionLogsLogGroup

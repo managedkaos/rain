@@ -1,11 +1,11 @@
 NAME=$(shell date +%s)
 PREFIX=server-
-TEMPLATES=$(shell find ec2 lambda applications iam kubernetes cognito -name '*.yml' 2>/dev/null)
+TEMPLATES=$(shell find . -name '*.yml' -not -path './.github/*' -not -path '*/Archive/*')
 # GNU Make uses SHELL=/bin/sh with .SHELLFLAGS=-c (`make -p | grep SHELL`). Loop
 # recipes use `set -e` so the first failing command stops the recipe.
 
-help: ## Display this help message
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+help: ## Display available targets
+	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_-]+:.*## / {printf "\033[36m%-28s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 requirements: ## Install Python requirements
 	pip install --upgrade pip
@@ -58,8 +58,8 @@ nginx: ## Deploy an Nginx server on Amazon Linux 2023
 	rain deploy ec2/amazon-linux-2023-nginx.yml nginx-$(NAME) --yes --detach
 
 jenkins: ## Deploy Jenkins server and agent stacks
-	rain deploy applications/jenkins-server.yml jenkins-server-$(NAME) --yes
-	rain deploy applications/jenkins-agent.yml jenkins-agent-$(NAME) --yes --params JenkinsStackName=jenkins-server-$(NAME)
+	rain deploy jenkins/jenkins-server.yml jenkins-server-$(NAME) --yes
+	rain deploy jenkins/jenkins-agent.yml jenkins-agent-$(NAME) --yes --params JenkinsStackName=jenkins-server-$(NAME)
 
 minikube: ## Deploy a Minikube stack
 	rain deploy kubernetes/minikube.yml minikube-$(NAME) --yes --detach
@@ -70,7 +70,7 @@ kind: ## Deploy a Kind stack
 k3s: ## Deploy a K3s stack
 	rain deploy kubernetes/k3s.yml k3s-$(NAME) --yes --detach
 
-name-length-check: ## Internal check for Cognito stack name length
+name-length-check: ## Check Cognito stack name length
 	@if [ $$(printf '%s' '$(NAME)' | wc -c) -gt 13 ]; then \
 		echo "ERROR: NAME must be 13 characters or less. Length = $$(printf '%s' '$(NAME)' | wc -c | tr -d ' '): '$(NAME)'"; \
 		printf '\nPlease set NAME to a shorter value (e.g., NAME=shortname) and try again.\n\n'; \

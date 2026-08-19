@@ -908,7 +908,7 @@ Resources:
           Value: !Sub rg-${AWS::StackName}
 
       UserData:
-        !Base64
+        Fn::Base64:
           Fn::Sub: |
             #!/bin/bash -xe
             exec > >(tee /var/log/user-data.log) 2>&1
