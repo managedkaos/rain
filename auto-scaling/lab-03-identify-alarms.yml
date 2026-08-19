@@ -1,0 +1,1277 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lab 03 - Identifying Redundant or Noisy Alarms
+
+Parameters:
+  AsgMinSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Minimum number of EC2 instances; also the initial desired capacity on stack create (DesiredCapacity is not set on the ASG so updates do not overwrite scaling)
+
+  AsgMaxSize:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    Description: Maximum number of EC2 instances in the Auto Scaling group
+
+  CpuScaleOutThreshold:
+    Type: Number
+    Default: 65
+    MinValue: 1
+    MaxValue: 100
+    Description: Average ASG CPU percent above which scale-out alarm fires (GreaterThanThreshold)
+
+  CpuScaleInThreshold:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    MaxValue: 100
+    Description: Average ASG CPU percent below which scale-in alarm fires (LessThanThreshold); keep well below CpuScaleOutThreshold
+
+  CpuScalingPeriod:
+    Type: Number
+    Default: 60
+    MinValue: 60
+    MaxValue: 300
+    Description: CloudWatch period in seconds for CPU alarms (60 aligns with detailed monitoring on instances)
+
+  CpuScaleOutEvaluationPeriods:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Consecutive breaching periods before scale-out alarm triggers
+
+  CpuScaleInEvaluationPeriods:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Consecutive breaching periods before scale-in alarm triggers
+
+  HealthCheckGracePeriod:
+    Type: Number
+    Default: 120
+    MinValue: 0
+    Description: Grace period in seconds before ELB health checks affect new instances
+
+  DefaultInstanceWarmup:
+    Type: Number
+    Default: 120
+    MinValue: 0
+    Description: Default instance warmup in seconds for scaling metrics
+
+  BaselineRequestsPerSecond:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 20
+    Description: Approximate number of steady baseline requests sent to the ALB each second
+
+  RequestScaleOutThreshold:
+    Type: Number
+    Default: 1000
+    MinValue: 1
+    Description: Requests per target in one minute that initiate request-based scale out
+
+  RequestScaleInThreshold:
+    Type: Number
+    Default: 500
+    MinValue: 0
+    Description: Requests per target in one minute at or below which one capacity unit is removed
+
+  SustainedErrorRateThreshold:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+    Description: Target HTTP 5xx percentage that represents sustained customer impact
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref Role]
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub vpc-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub igw-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub public-a-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      VpcId: !Ref Vpc
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub public-b-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      VpcId: !Ref Vpc
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.10.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub private-a-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      VpcId: !Ref Vpc
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub private-b-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      VpcId: !Ref Vpc
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub public-rt-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub private-rt-${AWS::StackName}
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetA
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetB
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the internet to the ALB
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the ALB to the Auto Scaling Group instances
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  LoadGeneratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow outbound access to the ALB
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Type: application
+      Tags:
+        - Key: asg-loadbalancer
+          Value: true
+        - Key: role
+          Value: loadbalancer
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  ApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApplicationTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: ResourceGroup
+              Value: !Sub rg-${AWS::StackName}
+      LaunchTemplateData:
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+        InstanceType: t3.small
+        IamInstanceProfile:
+          Name: !Ref Profile
+        Monitoring:
+          Enabled: true
+        MetadataOptions:
+          HttpTokens: required
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref InstanceSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub asg-webserver-${AWS::StackName}
+              - Key: asg-webserver
+                Value: true
+              - Key: role
+                Value: webserver
+              - Key: ResourceGroup
+                Value: !Sub rg-${AWS::StackName}
+
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install stress-ng amazon-cloudwatch-agent -y
+
+            mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
+            {
+              "metrics": {
+                "metrics_collected": {
+                  "cpu": {
+                    "measurement": ["cpu_usage_idle", "cpu_usage_user", "cpu_usage_system"],
+                    "metrics_collection_interval": 60,
+                    "totalcpu": true
+                  },
+                  "mem": {
+                    "measurement": ["mem_used_percent"],
+                    "metrics_collection_interval": 60
+                  }
+                }
+              }
+            }
+            CWAGENT
+
+            systemctl enable amazon-cloudwatch-agent
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-cloudwatch-agent
+            systemctl start amazon-ssm-agent
+
+            cat > /usr/local/bin/cpu-load.sh <<'CPULOAD'
+            #!/bin/bash
+            while true; do
+              LOAD=$((RANDOM % 25 + 10))
+              DURATION=$((RANDOM % 60 + 120))
+              stress-ng --cpu 1 --cpu-load $LOAD --cpu-method matrixprod --timeout $DURATION
+            done
+            CPULOAD
+
+            chmod +x /usr/local/bin/cpu-load.sh
+
+            cat > /etc/systemd/system/cpu-load.service <<'CPULOADSVC'
+            [Unit]
+            Description=Sustained CPU load simulator
+            After=network.target
+
+            [Service]
+            ExecStart=/usr/local/bin/cpu-load.sh
+            Restart=always
+            RestartSec=5
+            User=nobody
+
+            [Install]
+            WantedBy=multi-user.target
+            CPULOADSVC
+
+            systemctl daemon-reload
+            #systemctl enable --now cpu-load.service
+
+            app_dir=/opt/web-application
+            mkdir -p "$app_dir"
+
+            token=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            instance_id=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            availability_zone=$(curl -H "X-aws-ec2-metadata-token: $token" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            cat > "$app_dir/index.html" <<HTML
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <title>Scaling AWS Compute Demo</title>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  margin: 2rem;
+                  background: #f7f9fc;
+                  color: #1f2937;
+                }
+                .card {
+                  max-width: 720px;
+                  background: #ffffff;
+                  padding: 2rem;
+                  border-radius: 12px;
+                  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+                }
+                code {
+                  background: #eef2ff;
+                  padding: 0.2rem 0.4rem;
+                  border-radius: 6px;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>Scaling AWS Compute Demo</h1>
+                <p>This page is being served by an EC2 instance in an Auto Scaling Group behind an Application Load Balancer.</p>
+                <p><strong>Instance ID:</strong> <code>$instance_id</code></p>
+                <p><strong>Availability Zone:</strong> <code>$availability_zone</code></p>
+                <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
+                <p><a href="/error" target="_blank" rel="noopener noreferrer">Follow this link to generate a 500 error</a><p>
+              </div>
+            </body>
+            </html>
+            HTML
+
+            cat > /usr/local/bin/web-application-server.py <<'PY'
+            #!/usr/bin/python3
+            from http.server import HTTPServer, SimpleHTTPRequestHandler
+            from socketserver import ThreadingMixIn
+
+
+            class ApplicationHandler(SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path.startswith("/error"):
+                        body = b"{ 'msg': 'An error was returned by the application', 'code': 500 }\n"
+                        self.send_response(500)
+                        self.send_header("Content-Type", "text/plain")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    super().do_GET()
+
+
+            class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+                daemon_threads = True
+
+
+            ThreadedHTTPServer(("", 80), ApplicationHandler).serve_forever()
+            PY
+
+            chmod +x /usr/local/bin/web-application-server.py
+
+            cat > /etc/systemd/system/web-application.service <<'SERVICE'
+            [Unit]
+            Description=Threaded HTTP server using Python3
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/web-application
+            ExecStart=/usr/bin/python3 /usr/local/bin/web-application-server.py
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable --now web-application.service
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
+      HealthCheckType: ELB
+      DefaultInstanceWarmup: !Ref DefaultInstanceWarmup
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MetricsCollection:
+        - Granularity: "1Minute"
+      TargetGroupARNs:
+        - !Ref ApplicationTargetGroup
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub asg-webserver-${AWS::StackName}
+          PropagateAtLaunch: true
+        - Key: asg-webserver
+          Value: true
+          PropagateAtLaunch: true
+        - Key: role
+          Value: webserver
+          PropagateAtLaunch: true
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+          PropagateAtLaunch: true
+
+  RequestStepScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
+      MetricAggregationType: Average
+      PolicyName: !Sub ${AWS::StackName}-Request-Scale-Out
+      PolicyType: StepScaling
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          MetricIntervalUpperBound: 500
+          ScalingAdjustment: 1
+        - MetricIntervalLowerBound: 500
+          ScalingAdjustment: 2
+
+  RequestStepScaleInPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
+      MetricAggregationType: Average
+      PolicyName: !Sub ${AWS::StackName}-Request-Scale-In
+      PolicyType: StepScaling
+      StepAdjustments:
+        - MetricIntervalUpperBound: 0
+          ScalingAdjustment: -1
+
+  AlertTopicKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts the internal Lab 03 operator-alert topic
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowCloudWatchAlarmPublishing
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: AllowSnsEncryption
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  OperatorAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Lab 03 operator alarm events
+      KmsMasterKeyId: !GetAtt AlertTopicKey.Arn
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  AlertLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /labs/${AWS::StackName}/operator-alerts
+      RetentionInDays: 7
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  AlertLoggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteOperatorAlertEvents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${AlertLogGroup.Arn}:*
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+  AlertLoggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Writes CloudWatch alarm and recovery notifications to the lab alert log
+      FunctionName: !Sub ${AWS::StackName}-operator-alert-logger
+      Handler: index.handler
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref AlertLogGroup
+      MemorySize: 128
+      Role: !GetAtt AlertLoggerRole.Arn
+      Runtime: python3.12
+      Timeout: 15
+      Code:
+        ZipFile: |
+          import json
+
+
+          def handler(event, context):
+              for record in event.get("Records", []):
+                  message = json.loads(record["Sns"]["Message"])
+                  output = {
+                      "notificationTimestamp": record["Sns"]["Timestamp"],
+                      "alarmName": message.get("AlarmName"),
+                      "alarmDescription": message.get("AlarmDescription"),
+                      "newState": message.get("NewStateValue"),
+                      "reason": message.get("NewStateReason"),
+                      "region": message.get("Region"),
+                  }
+                  print(json.dumps(output, separators=(",", ":")))
+
+  AlertLoggerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AlertLoggerFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref OperatorAlertTopic
+
+  AlertLoggerSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt AlertLoggerFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref OperatorAlertTopic
+
+  CpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-asg-average-cpu-high-${CpuScaleOutThreshold}
+      AlarmDescription: Operator notification when ASG average CPU exceeds the monitoring threshold
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: !Ref CpuScalingPeriod
+      EvaluationPeriods: !Ref CpuScaleOutEvaluationPeriods
+      Threshold: !Ref CpuScaleOutThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref OperatorAlertTopic
+      OKActions:
+        - !Ref OperatorAlertTopic
+
+  CpuLowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-asg-average-cpu-low-${CpuScaleInThreshold}
+      AlarmDescription: Informational alarm when ASG average CPU falls below the monitoring threshold
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: !Ref CpuScalingPeriod
+      EvaluationPeriods: !Ref CpuScaleInEvaluationPeriods
+      Threshold: !Ref CpuScaleInThreshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+
+  RequestHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-alb-request-per-target-high-${RequestScaleOutThreshold}
+      AlarmDescription: Requests per target reached the scale-out threshold
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCountPerTarget
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref RequestScaleOutThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref RequestStepScaleOutPolicy
+
+  RequestLowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-alb-request-per-target-low-${RequestScaleInThreshold}
+      AlarmDescription: Requests per target fell below the scale-in threshold
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCountPerTarget
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref RequestScaleInThreshold
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref RequestStepScaleInPolicy
+
+  OperatorHighRequestAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-operator-high-request-volume
+      AlarmDescription: Operator notification for request volume already handled by Auto Scaling
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCountPerTarget
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref RequestScaleOutThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref OperatorAlertTopic
+      OKActions:
+        - !Ref OperatorAlertTopic
+
+  OperatorAnyTarget5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-operator-any-target-5xx
+      AlarmDescription: Operator notification when any target returns an HTTP 5xx response
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref OperatorAlertTopic
+      OKActions:
+        - !Ref OperatorAlertTopic
+
+  OperatorSustainedErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-operator-sustained-error-rate
+      AlarmDescription: Operator notification for sustained customer-facing target errors
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: !Ref SustainedErrorRateThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: errors
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApplicationELB
+              MetricName: HTTPCode_Target_5XX_Count
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+                - Name: TargetGroup
+                  Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+            Period: 60
+            Stat: Sum
+        - Id: requests
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApplicationELB
+              MetricName: RequestCount
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+            Period: 60
+            Stat: Sum
+        - Id: error_rate
+          Expression: IF(requests > 0, errors * 100 / requests, 0)
+          Label: Target 5xx error rate percent
+          ReturnData: true
+      AlarmActions:
+        - !Ref OperatorAlertTopic
+      OKActions:
+        - !Ref OperatorAlertTopic
+
+  LoadGeneratorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      InstanceType: t3.small
+      Monitoring: true
+      IamInstanceProfile: !Ref Profile
+      MetadataOptions:
+        HttpTokens: required
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref LoadGeneratorSecurityGroup
+          SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub load-generator-${AWS::StackName}
+        - Key: asg-load-generator
+          Value: true
+        - Key: role
+          Value: load-generator
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+      UserData:
+        !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            dnf install -y httpd-tools git docker java-21-amazon-corretto python3-pip
+
+            cat > /usr/local/bin/generate-alb-requests.sh <<'SCRIPT'
+            #!/bin/bash
+            set -euo pipefail
+            URL="http://${ApplicationLoadBalancer.DNSName}/"
+            REQUESTS_PER_SECOND=${BaselineRequestsPerSecond}
+            INTERVAL_SECONDS=$(awk -v rate="$REQUESTS_PER_SECOND" 'BEGIN { printf "%.3f", 1 / rate }')
+            while true; do
+              curl -s -o /dev/null "$URL"
+              sleep "$INTERVAL_SECONDS"
+            done
+            SCRIPT
+
+            chmod +x /usr/local/bin/generate-alb-requests.sh
+
+            cat > /etc/systemd/system/ab-load.service <<'SERVICE'
+            [Unit]
+            Description=Apache Bench load generator against the ALB
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/generate-alb-requests.sh
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable --now ab-load.service
+            systemctl enable amazon-cloudwatch-agent
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-cloudwatch-agent
+            systemctl start amazon-ssm-agent
+
+  CpuPerformanceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub cpu-performance-${AWS::StackName}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Maximum", "period": 60, "label": "EC2 Max CPU (ASG Aggregate)", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity vs EC2 Max CPU (ASG Aggregate)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ { "expression": "SEARCH('{AWS/EC2,InstanceId} MetricName=\"CPUUtilization\"', 'Maximum', 60)", "id": "e1", "label": " " } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (Per Instance)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Maximum", "period": 60 } ]
+                ],
+                "annotations": {
+                  "horizontal": [
+                    { "value": ${CpuScaleOutThreshold}, "label": "Scale-out threshold", "color": "#d62728", "fill": "none", "visible": true },
+                    { "value": ${CpuScaleInThreshold}, "label": "Scale-in threshold", "color": "#2ca02c", "fill": "none", "visible": true }
+                  ]
+                },
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 Max CPU (ASG Aggregate)",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            }
+          ]
+        }
+
+  AlbPerformanceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub alb-performance-${AWS::StackName}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60, "label": "ALB Request Count", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity vs ALB Request Count",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Target Response Time",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Request Count",
+                "period": 60
+              }
+            }
+          ]
+        }
+
+  AlarmEffectivenessDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub alarm-effectiveness-${AWS::StackName}
+      DashboardBody: !Sub |
+        {
+          "start": "-PT3H",
+          "periodOverride": "inherit",
+          "widgets": [
+            { "type": "text", "x": 0, "y": 0, "width": 24, "height": 2, "properties": { "markdown": "# Alarm effectiveness analysis\nCompare scaling controls, operator notifications, workload behavior, and customer impact over the same time range." } },
+            { "type": "metric", "x": 0, "y": 2, "width": 6, "height": 6, "properties": { "title": "Request Scale-Out Control", "annotations": { "alarms": [ "${RequestHighAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 6, "y": 2, "width": 6, "height": 6, "properties": { "title": "Request Scale-In Control", "annotations": { "alarms": [ "${RequestLowAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 12, "y": 2, "width": 6, "height": 6, "properties": { "title": "CPU High (No Scaling Action, Operator Alert)", "annotations": { "alarms": [ "${CpuHighAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 18, "y": 2, "width": 6, "height": 6, "properties": { "title": "CPU Low (No Scaling Action)", "annotations": { "alarms": [ "${CpuLowAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 0, "y": 8, "width": 8, "height": 6, "properties": { "title": "Operator High Request (Duplicate)", "annotations": { "alarms": [ "${OperatorHighRequestAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 8, "y": 8, "width": 8, "height": 6, "properties": { "title": "Operator Any Target 5xx", "annotations": { "alarms": [ "${OperatorAnyTarget5xxAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            { "type": "metric", "x": 16, "y": 8, "width": 8, "height": 6, "properties": { "title": "Operator Sustained Error Rate", "annotations": { "alarms": [ "${OperatorSustainedErrorRateAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 14,
+              "width": 24,
+              "height": 7,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "Operator Alert Event Log",
+                "view": "table",
+                "query": "SOURCE '${AlertLogGroup}' | fields @timestamp, alarmName, newState, alarmDescription, reason | filter ispresent(alarmName) | sort @timestamp desc | limit 100"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 21,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG In-Service Instances", "yAxis": "left" } ],
+                  [ "AWS/ApplicationELB", "RequestCountPerTarget", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Sum", "period": 60, "label": "Requests Per Target", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Request Demand and Capacity",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } },
+                "annotations": {
+                  "horizontal": [
+                    { "value": ${RequestScaleOutThreshold}, "label": "Scale out 1000", "color": "#d62728" },
+                    { "value": ${RequestScaleInThreshold}, "label": "Scale in 500", "color": "#2ca02c" }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 27,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Average CPU" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CPU Activity and Capacity",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 27,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "p95", "period": 60, "label": "p95 Target Response Time", "yAxis": "left" } ],
+                  [ ".", "HealthyHostCount", ".", ".", ".", ".", { "stat": "Average", "period": 60, "label": "Healthy Hosts", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Application Health",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 33,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ { "expression": "IF(requests > 0, errors * 100 / requests, 0)", "label": "Target 5xx Error Rate %", "id": "error_rate", "yAxis": "left" } ],
+                  [ "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Sum", "period": 60, "label": "Target 5xx Count", "id": "errors", "visible": false } ],
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60, "label": "Total Requests", "id": "requests", "visible": false } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Customer-Facing Target Error Rate",
+                "period": 60,
+                "yAxis": { "left": { "min": 0, "max": 100 } },
+                "annotations": {
+                  "horizontal": [
+                    { "value": ${SustainedErrorRateThreshold}, "label": "Sustained error threshold", "color": "#d62728" }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+
+  StackResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name: !Sub rg-${AWS::StackName}
+      Description: !Sub Resource group for CloudFormation stack ${AWS::StackName}
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+        Query:
+          ResourceTypeFilters:
+            - AWS::AllSupported
+          StackIdentifier: !Ref AWS::StackId
+      Tags:
+        - Key: ResourceGroup
+          Value: !Sub rg-${AWS::StackName}
+
+Outputs:
+  AlbURL:
+    Description: Application Load Balancer URL
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}/
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group name
+    Value: !Ref AutoScalingGroup
+
+  ApplicationLoadBalancerFullName:
+    Description: CloudWatch LoadBalancer dimension for the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+
+  ApplicationTargetGroupFullName:
+    Description: CloudWatch TargetGroup dimension for the Application Load Balancer target group
+    Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+
+  CpuPerformanceDashboardName:
+    Description: CloudWatch dashboard for ASG/EC2 CPU performance
+    Value: !Ref CpuPerformanceDashboard
+
+  AlbPerformanceDashboardName:
+    Description: CloudWatch dashboard for ASG/ALB request performance
+    Value: !Ref AlbPerformanceDashboard
+
+  AlarmEffectivenessDashboardName:
+    Description: Primary CloudWatch dashboard for Lab 03 alarm-effectiveness analysis
+    Value: !Ref AlarmEffectivenessDashboard
+
+  AlertLogGroupName:
+    Description: CloudWatch Logs group containing internal operator alarm notifications
+    Value: !Ref AlertLogGroup
+
+  OperatorAlertTopicArn:
+    Description: Internal SNS topic receiving operator alarm and recovery actions
+    Value: !Ref OperatorAlertTopic
+
+  RequestScaleOutPolicyArn:
+    Description: Enabled request-based scale-out policy ARN
+    Value: !Ref RequestStepScaleOutPolicy
+
+  RequestScaleInPolicyArn:
+    Description: Enabled request-based scale-in policy ARN
+    Value: !Ref RequestStepScaleInPolicy
+
+  LoadGeneratorInstanceId:
+    Description: Instance ID of the Apache Bench load generator instance
+    Value: !Ref LoadGeneratorInstance
+
+  LoadGeneratorSsmCommand:
+    Description: AWS CLI SSM command to connect to the LoadGeneratorInstance as root
+    Value: !Sub |
+      aws ssm start-session --target ${LoadGeneratorInstance}
