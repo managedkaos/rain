@@ -1,6 +1,5 @@
 ---
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Lab 03 - Identifying Redundant or Noisy Alarms
+Description: Lab 02 - Tuning Scaling Policies for Stability
 
 Parameters:
   AsgMinSize:
@@ -50,6 +49,13 @@ Parameters:
     MaxValue: 10
     Description: Consecutive breaching periods before scale-in alarm triggers
 
+  CpuStepScalingCooldown:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    MaxValue: 600
+    Description: Seconds between allowed scaling activities per step policy (short value reacts faster but may flap)
+
   HealthCheckGracePeriod:
     Type: Number
     Default: 120
@@ -68,25 +74,6 @@ Parameters:
     MinValue: 1
     MaxValue: 20
     Description: Approximate number of steady baseline requests sent to the ALB each second
-
-  RequestScaleOutThreshold:
-    Type: Number
-    Default: 1000
-    MinValue: 1
-    Description: Requests per target in one minute that initiate request-based scale out
-
-  RequestScaleInThreshold:
-    Type: Number
-    Default: 500
-    MinValue: 0
-    Description: Requests per target in one minute at or below which one capacity unit is removed
-
-  SustainedErrorRateThreshold:
-    Type: Number
-    Default: 5
-    MinValue: 1
-    MaxValue: 100
-    Description: Target HTTP 5xx percentage that represents sustained customer impact
 
 Resources:
   Role:
@@ -471,7 +458,6 @@ Resources:
                 <p><strong>Instance ID:</strong> <code>$instance_id</code></p>
                 <p><strong>Availability Zone:</strong> <code>$availability_zone</code></p>
                 <p><strong>Stack:</strong> <code>${AWS::StackName}</code></p>
-                <p><a href="/error" target="_blank" rel="noopener noreferrer">Follow this link to generate a 500 error</a><p>
               </div>
             </body>
             </html>
@@ -483,24 +469,11 @@ Resources:
             from socketserver import ThreadingMixIn
 
 
-            class ApplicationHandler(SimpleHTTPRequestHandler):
-                def do_GET(self):
-                    if self.path.startswith("/error"):
-                        body = b"{ 'code': 503, 'message': 'An Service Unavailable error was encountered.' }\n"
-                        self.send_response(503)
-                        self.send_header("Content-Type", "text/plain")
-                        self.send_header("Content-Length", str(len(body)))
-                        self.end_headers()
-                        self.wfile.write(body)
-                        return
-                    super().do_GET()
-
-
             class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-                daemon_threads = True
+                pass
 
 
-            ThreadedHTTPServer(("", 80), ApplicationHandler).serve_forever()
+            ThreadedHTTPServer(("", 80), SimpleHTTPRequestHandler).serve_forever()
             PY
 
             chmod +x /usr/local/bin/web-application-server.py
@@ -557,168 +530,41 @@ Resources:
           Value: !Sub rg-${AWS::StackName}
           PropagateAtLaunch: true
 
-  RequestStepScaleOutPolicy:
+
+  CpuStepScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
-      AdjustmentType: ChangeInCapacity
       AutoScalingGroupName: !Ref AutoScalingGroup
-      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
-      MetricAggregationType: Average
-      PolicyName: Request Scale Out
       PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      Cooldown: !Ref CpuStepScalingCooldown
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalLowerBound: 0
-          MetricIntervalUpperBound: 500
+          MetricIntervalUpperBound: 15
           ScalingAdjustment: 1
-        - MetricIntervalLowerBound: 500
+        - MetricIntervalLowerBound: 15
           ScalingAdjustment: 2
 
-  RequestStepScaleInPolicy:
+  CpuStepScaleInPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
-      AdjustmentType: ChangeInCapacity
       AutoScalingGroupName: !Ref AutoScalingGroup
-      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
-      MetricAggregationType: Average
-      PolicyName: Request Scale In
       PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      Cooldown: !Ref CpuStepScalingCooldown
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: !Ref DefaultInstanceWarmup
       StepAdjustments:
         - MetricIntervalUpperBound: 0
           ScalingAdjustment: -1
-
-  AlertTopicKey:
-    Type: AWS::KMS::Key
-    Properties:
-      Description: Encrypts the internal Lab 03 operator-alert topic
-      EnableKeyRotation: true
-      KeyPolicy:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: EnableAccountAdministration
-            Effect: Allow
-            Principal:
-              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
-            Action: kms:*
-            Resource: '*'
-          - Sid: AllowCloudWatchAlarmPublishing
-            Effect: Allow
-            Principal:
-              Service: cloudwatch.amazonaws.com
-            Action:
-              - kms:Decrypt
-              - kms:GenerateDataKey*
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-          - Sid: AllowSnsEncryption
-            Effect: Allow
-            Principal:
-              Service: sns.amazonaws.com
-            Action:
-              - kms:Decrypt
-              - kms:GenerateDataKey*
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-      Tags:
-        - Key: ResourceGroup
-          Value: !Sub rg-${AWS::StackName}
-
-  OperatorAlertTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      DisplayName: Lab 03 operator alarm events
-      KmsMasterKeyId: !GetAtt AlertTopicKey.Arn
-      Tags:
-        - Key: ResourceGroup
-          Value: !Sub rg-${AWS::StackName}
-
-  AlertLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /labs/${AWS::StackName}/operator-alerts
-      RetentionInDays: 7
-      Tags:
-        - Key: ResourceGroup
-          Value: !Sub rg-${AWS::StackName}
-
-  AlertLoggerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: WriteOperatorAlertEvents
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub ${AlertLogGroup.Arn}:*
-      Tags:
-        - Key: ResourceGroup
-          Value: !Sub rg-${AWS::StackName}
-
-  AlertLoggerFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: Writes CloudWatch alarm and recovery notifications to the lab alert log
-      FunctionName: !Sub ${AWS::StackName}-operator-alert-logger
-      Handler: index.handler
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref AlertLogGroup
-      MemorySize: 128
-      Role: !GetAtt AlertLoggerRole.Arn
-      Runtime: python3.12
-      Timeout: 15
-      Code:
-        ZipFile: |
-          import json
-
-
-          def handler(event, context):
-              for record in event.get("Records", []):
-                  message = json.loads(record["Sns"]["Message"])
-                  output = {
-                      "notificationTimestamp": record["Sns"]["Timestamp"],
-                      "alarmName": message.get("AlarmName"),
-                      "alarmDescription": message.get("AlarmDescription"),
-                      "newState": message.get("NewStateValue"),
-                      "reason": message.get("NewStateReason"),
-                      "region": message.get("Region"),
-                  }
-                  print(json.dumps(output, separators=(",", ":")))
-
-  AlertLoggerInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref AlertLoggerFunction
-      Principal: sns.amazonaws.com
-      SourceArn: !Ref OperatorAlertTopic
-
-  AlertLoggerSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      Endpoint: !GetAtt AlertLoggerFunction.Arn
-      Protocol: lambda
-      TopicArn: !Ref OperatorAlertTopic
 
   CpuHighAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub asg-average-cpu-high-${CpuScaleOutThreshold}
-      AlarmDescription: ASG average CPU exceeds the monitoring threshold
+      AlarmDescription: Scale out when ASG average CPU exceeds threshold
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Statistic: Average
@@ -731,15 +577,13 @@ Resources:
         - Name: AutoScalingGroupName
           Value: !Ref AutoScalingGroup
       AlarmActions:
-        - !Ref OperatorAlertTopic
-      OKActions:
-        - !Ref OperatorAlertTopic
+        - !Ref CpuStepScaleOutPolicy
 
   CpuLowAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub asg-average-cpu-low-${CpuScaleInThreshold}
-      AlarmDescription: ASG average CPU falls below the monitoring threshold
+      AlarmDescription: Scale in when ASG average CPU stays below threshold
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Statistic: Average
@@ -751,136 +595,8 @@ Resources:
       Dimensions:
         - Name: AutoScalingGroupName
           Value: !Ref AutoScalingGroup
-
-  RequestHighAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub alb-request-per-target-high-${RequestScaleOutThreshold}
-      AlarmDescription: Requests per target reached the scale-out threshold
-      Namespace: AWS/ApplicationELB
-      MetricName: RequestCountPerTarget
-      Statistic: Sum
-      Period: 60
-      EvaluationPeriods: 1
-      DatapointsToAlarm: 1
-      Threshold: !Ref RequestScaleOutThreshold
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      Dimensions:
-        - Name: TargetGroup
-          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
       AlarmActions:
-        - !Ref RequestStepScaleOutPolicy
-
-  RequestLowAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub alb-request-per-target-low-${RequestScaleInThreshold}
-      AlarmDescription: Requests per target fell below the scale-in threshold
-      Namespace: AWS/ApplicationELB
-      MetricName: RequestCountPerTarget
-      Statistic: Sum
-      Period: 60
-      EvaluationPeriods: 1
-      DatapointsToAlarm: 1
-      Threshold: !Ref RequestScaleInThreshold
-      ComparisonOperator: LessThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      Dimensions:
-        - Name: TargetGroup
-          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
-      AlarmActions:
-        - !Ref RequestStepScaleInPolicy
-
-  OperatorHighRequestAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: high-request-volume
-      AlarmDescription: Operator notification for request volume already handled by Auto Scaling
-      Namespace: AWS/ApplicationELB
-      MetricName: RequestCountPerTarget
-      Statistic: Sum
-      Period: 60
-      EvaluationPeriods: 1
-      DatapointsToAlarm: 1
-      Threshold: !Ref RequestScaleOutThreshold
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      Dimensions:
-        - Name: TargetGroup
-          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
-      AlarmActions:
-        - !Ref OperatorAlertTopic
-      OKActions:
-        - !Ref OperatorAlertTopic
-
-  OperatorAnyTarget5xxAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: any-target-5xx
-      AlarmDescription: Operator notification when any target returns an HTTP 5xx response
-      Namespace: AWS/ApplicationELB
-      MetricName: HTTPCode_Target_5XX_Count
-      Statistic: Sum
-      Period: 60
-      EvaluationPeriods: 1
-      DatapointsToAlarm: 1
-      Threshold: 0
-      ComparisonOperator: GreaterThanThreshold
-      TreatMissingData: notBreaching
-      Dimensions:
-        - Name: LoadBalancer
-          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
-        - Name: TargetGroup
-          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
-      AlarmActions:
-        - !Ref OperatorAlertTopic
-      OKActions:
-        - !Ref OperatorAlertTopic
-
-  OperatorSustainedErrorRateAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: sustained-error-rate
-      AlarmDescription: Operator notification for sustained customer-facing target errors
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      EvaluationPeriods: 3
-      DatapointsToAlarm: 2
-      Threshold: !Ref SustainedErrorRateThreshold
-      TreatMissingData: notBreaching
-      Metrics:
-        - Id: errors
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/ApplicationELB
-              MetricName: HTTPCode_Target_5XX_Count
-              Dimensions:
-                - Name: LoadBalancer
-                  Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
-                - Name: TargetGroup
-                  Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
-            Period: 60
-            Stat: Sum
-        - Id: requests
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/ApplicationELB
-              MetricName: RequestCount
-              Dimensions:
-                - Name: LoadBalancer
-                  Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
-            Period: 60
-            Stat: Sum
-        - Id: error_rate
-          Expression: IF(requests > 0, errors * 100 / requests, 0)
-          Label: Target 5xx Error Rate %
-          ReturnData: true
-      AlarmActions:
-        - !Ref OperatorAlertTopic
-      OKActions:
-        - !Ref OperatorAlertTopic
+        - !Ref CpuStepScaleInPolicy
 
   LoadGeneratorInstance:
     Type: AWS::EC2::Instance
@@ -1086,67 +802,18 @@ Resources:
           ]
         }
 
-  AlarmEffectivenessDashboard:
+  StabilityAnalysisDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
-      DashboardName: !Sub alarm-effectiveness-${AWS::StackName}
+      DashboardName: !Sub stability-analysis-${AWS::StackName}
       DashboardBody: !Sub |
         {
-          "start": "-PT3H",
-          "periodOverride": "inherit",
           "widgets": [
-            { "type": "text", "x": 0, "y": 0, "width": 24, "height": 2, "properties": { "markdown": "# Alarm effectiveness analysis\nCompare scaling controls, operator notifications, and workload behavior." } },
-            { "type": "metric", "x": 0, "y": 2, "width": 6, "height": 6, "properties": { "title": "Request Scale-Out Alarm", "annotations": { "alarms": [ "${RequestHighAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 6, "y": 2, "width": 6, "height": 6, "properties": { "title": "Request Scale-In Alarm", "annotations": { "alarms": [ "${RequestLowAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 12, "y": 2, "width": 6, "height": 6, "properties": { "title": "CPU Scale-Out Alarm", "annotations": { "alarms": [ "${CpuHighAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 18, "y": 2, "width": 6, "height": 6, "properties": { "title": "CPU Scale-In Alarm", "annotations": { "alarms": [ "${CpuLowAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 0, "y": 8, "width": 8, "height": 6, "properties": { "title": "RequestCountPerTarget High Alarm", "annotations": { "alarms": [ "${OperatorHighRequestAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 8, "y": 8, "width": 8, "height": 6, "properties": { "title": "Target 5xx Count", "annotations": { "alarms": [ "${OperatorAnyTarget5xxAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            { "type": "metric", "x": 16, "y": 8, "width": 8, "height": 6, "properties": { "title": "Sustained Error Rate", "annotations": { "alarms": [ "${OperatorSustainedErrorRateAlarm.Arn}" ] }, "view": "timeSeries", "stacked": false } },
-            {
-              "type": "log",
-              "x": 0,
-              "y": 14,
-              "width": 24,
-              "height": 7,
-              "properties": {
-                "region": "${AWS::Region}",
-                "title": "Operator Alert Event Log",
-                "view": "table",
-                "query": "SOURCE '${AlertLogGroup}' | fields @timestamp, alarmName, newState, alarmDescription, reason | filter ispresent(alarmName) | sort @timestamp desc | limit 100"
-              }
-            },
             {
               "type": "metric",
               "x": 0,
-              "y": 21,
+              "y": 0,
               "width": 24,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
-                  [ "AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG In-Service Instances", "yAxis": "left" } ],
-                  [ "AWS/ApplicationELB", "RequestCountPerTarget", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Sum", "period": 60, "label": "Requests Per Target", "yAxis": "right" } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Request Demand and Capacity",
-                "period": 60,
-                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } },
-                "annotations": {
-                  "horizontal": [
-                    { "value": ${RequestScaleOutThreshold}, "label": "Scale out 1000", "color": "#d62728" },
-                    { "value": ${RequestScaleInThreshold}, "label": "Scale in 500", "color": "#2ca02c" }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 27,
-              "width": 12,
               "height": 6,
               "properties": {
                 "metrics": [
@@ -1163,12 +830,30 @@ Resources:
                   "right": { "min": 0, "max": 100 }
                 }
               }
+            },            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroup}", { "stat": "Average", "period": 60, "label": "ASG Desired Capacity", "yAxis": "left" } ],
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60, "label": "ALB Request Count", "yAxis": "right" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ASG Desired Capacity vs ALB Request Count",
+                "period": 60,
+                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } }
+              }
             },
             {
               "type": "metric",
-              "x": 12,
-              "y": 27,
-              "width": 12,
+              "x": 0,
+              "y": 6,
+              "width": 24,
               "height": 6,
               "properties": {
                 "metrics": [
@@ -1180,32 +865,40 @@ Resources:
                 "region": "${AWS::Region}",
                 "title": "Application Health",
                 "period": 60,
-                "yAxis": { "left": { "min": 0 }, "right": { "min": 0 } }
+                "yAxis": {
+                  "left": { "min": 0 },
+                  "right": { "min": 0 }
+                }
               }
             },
             {
               "type": "metric",
               "x": 0,
-              "y": 33,
-              "width": 24,
+              "y": 12,
+              "width": 12,
               "height": 6,
               "properties": {
-                "metrics": [
-                  [ { "expression": "IF(requests > 0, errors * 100 / requests, 0)", "label": "Target 5xx Error Rate %", "id": "error_rate", "yAxis": "left" } ],
-                  [ "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", { "stat": "Sum", "period": 60, "label": "Target 5xx Count", "id": "errors", "visible": false } ],
-                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "period": 60, "label": "Total Requests", "id": "requests", "visible": false } ]
-                ],
-                "view": "timeSeries",
-                "stacked": false,
-                "region": "${AWS::Region}",
-                "title": "Customer-Facing Target Error Rate",
-                "period": 60,
-                "yAxis": { "left": { "min": 0, "max": 25 } },
                 "annotations": {
-                  "horizontal": [
-                    { "value": ${SustainedErrorRateThreshold}, "label": "Sustained error threshold", "color": "#d62728" }
-                  ]
-                }
+                  "alarms": [ "${CpuHighAlarm.Arn}" ]
+                },
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "title": "CPU Scale-Out Alarm"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "annotations": {
+                  "alarms": [ "${CpuLowAlarm.Arn}" ]
+                },
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "title": "CPU Scale-In Alarm"
               }
             }
           ]
@@ -1251,25 +944,9 @@ Outputs:
     Description: CloudWatch dashboard for ASG/ALB request performance
     Value: !Ref AlbPerformanceDashboard
 
-  AlarmEffectivenessDashboardName:
-    Description: Primary CloudWatch dashboard for Lab 03 alarm-effectiveness analysis
-    Value: !Ref AlarmEffectivenessDashboard
-
-  AlertLogGroupName:
-    Description: CloudWatch Logs group containing internal operator alarm notifications
-    Value: !Ref AlertLogGroup
-
-  OperatorAlertTopicArn:
-    Description: Internal SNS topic receiving operator alarm and recovery actions
-    Value: !Ref OperatorAlertTopic
-
-  RequestScaleOutPolicyArn:
-    Description: Enabled request-based scale-out policy ARN
-    Value: !Ref RequestStepScaleOutPolicy
-
-  RequestScaleInPolicyArn:
-    Description: Enabled request-based scale-in policy ARN
-    Value: !Ref RequestStepScaleInPolicy
+  StabilityAnalysisDashboardName:
+    Description: Learner-built CloudWatch dashboard for scaling stability analysis
+    Value: !Ref StabilityAnalysisDashboard
 
   LoadGeneratorInstanceId:
     Description: Instance ID of the Apache Bench load generator instance
