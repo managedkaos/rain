@@ -39,6 +39,16 @@ Resources:
             Condition:
               StringEquals:
                 'aws:SourceAccount': !Ref 'AWS::AccountId'
+          - Sid: AllowAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:*'
+            Action:
+              - 's3:GetEncryptionConfiguration'
+              - 's3:PutObject'
+            Resource:
+              - !GetAtt SessionLogsBucket.Arn
+              - !Sub '${SessionLogsBucket.Arn}/*'
 
   SessionLogsLogGroup:
     Type: 'AWS::Logs::LogGroup'
@@ -49,7 +59,7 @@ Resources:
   SSMSessionPreferences:
     Type: 'AWS::SSM::Document'
     Properties:
-      Name: 'AWS-StartSSMSession-SessionPreferences'
+      Name: 'SSM-SessionManagerRunShell'
       DocumentType: 'Session'
       DocumentFormat: 'JSON'
       Content:
@@ -61,7 +71,7 @@ Resources:
           s3BucketName: !Ref SessionLogsBucket
           s3EncryptionEnabled: true
           cloudWatchLogGroupName: !Ref SessionLogsLogGroup
-          cloudWatchEncryptionEnabled: true
+          cloudWatchEncryptionEnabled: false
 
 Outputs:
   SessionLogsBucketName:
