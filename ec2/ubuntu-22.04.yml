@@ -28,7 +28,7 @@ Resources:
               - sts:AssumeRole
       Path: /
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
   Profile:
     Type: AWS::IAM::InstanceProfile
@@ -110,6 +110,13 @@ Resources:
               git: []
               openjdk-21-jdk: []
               python3-pip: []
+          commands:
+            01_install_ssm_agent:
+              command: !Sub |
+                wget -q https://s3.${AWS::Region}.amazonaws.com/amazon-ssm-${AWS::Region}/latest/debian_amd64/amazon-ssm-agent.deb -O /tmp/amazon-ssm-agent.deb
+                dpkg -i /tmp/amazon-ssm-agent.deb
+            02_enable_ssm_agent:
+              command: systemctl enable amazon-ssm-agent && systemctl start amazon-ssm-agent
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
@@ -160,3 +167,7 @@ Outputs:
   TerminalURL:
     Description: Follow this URL to open a terminal on the server
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
+  SsmCommand:
+    Description: AWS CLI SSM command to connect to the instance
+    Value: !Sub |
+      aws ssm start-session --target ${Server}

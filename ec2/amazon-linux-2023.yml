@@ -28,7 +28,7 @@ Resources:
               - sts:AssumeRole
       Path: /
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
   Profile:
     Type: AWS::IAM::InstanceProfile
@@ -137,3 +137,7 @@ Outputs:
   TerminalURL:
     Description: Follow this URL to open a terminal on the server
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
+  SsmCommand:
+    Description: AWS CLI SSM command to connect to the instance
+    Value: !Sub |
+      aws ssm start-session --target ${Server}

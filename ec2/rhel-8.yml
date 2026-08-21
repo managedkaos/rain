@@ -1,5 +1,5 @@
 ---
-Description: An EC2 instance running NGINX on Amazon Linux 2023
+Description: An EC2 instance running Red Hat Enterprise Linux 8; includes an IAM role with permissions for Systems Manager.
 
 Parameters:
   InstanceType:
@@ -13,6 +13,10 @@ Parameters:
       - t3.2xlarge
     Default: t3.medium
     ConstraintDescription: Must be a valid EC2 instance type.
+  ImageId:
+    Description: RHEL 8 AMI ID (region-specific, no SSM parameter available for RHEL)
+    Type: AWS::EC2::Image::Id
+    Default: ami-0a66562a4c689c401
 
 Resources:
   Role:
@@ -81,21 +85,48 @@ Resources:
               mode: "000400"
               owner: root
               group: root
-          services:
-            systemd:
-              cfn-hup:
-                enabled: "true"
-                ensureRunning: "true"
-                files:
-                  - /etc/cfn/cfn-hup.conf
-                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+            /lib/systemd/system/cfn-hup.service:
+              content: |
+                [Unit]
+                Description=cfn-hup daemon
+                After=network.target
+
+                [Service]
+                Type=simple
+                ExecStart=/opt/aws/bin/cfn-hup
+                Restart=always
+
+                [Install]
+                WantedBy=multi-user.target
+              mode: "000644"
+              owner: root
+              group: root
+          commands:
+            00cfn_hup_daemon_reload:
+              command: systemctl daemon-reload
+            01cfn_hup_enable:
+              command: systemctl enable cfn-hup.service
+            02cfn_hup_start:
+              command: systemctl start cfn-hup.service
         install_apps:
           packages:
             yum:
-              nginx: []
+              git: []
+              python3-pip: []
+          commands:
+            01_install_ssm_agent:
+              command: !Sub yum install -y https://s3.${AWS::Region}.amazonaws.com/amazon-ssm-${AWS::Region}/latest/linux_amd64/amazon-ssm-agent.rpm
+            02_enable_ssm_agent:
+              command: systemctl enable amazon-ssm-agent && systemctl start amazon-ssm-agent
     Properties:
       InstanceType: !Ref InstanceType
-      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      ImageId: !Ref ImageId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 50
+            VolumeType: gp3
+            DeleteOnTermination: true
       IamInstanceProfile: !Ref Profile
       SecurityGroups:
         - !Ref SecurityGroup
@@ -107,17 +138,21 @@ Resources:
           #!/bin/bash -xe
           exec > >(tee /var/log/user-data.log) 2>&1
 
-          dnf update -y aws-cfn-bootstrap
+          yum update -y
+          yum install -y python3-pip
+
+          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+
+          mkdir -p /opt/aws/bin
+          for f in cfn-init cfn-hup cfn-signal; do
+            ln -sf /usr/local/bin/$f /opt/aws/bin/$f
+          done
 
           /opt/aws/bin/cfn-init -v \
             --stack ${AWS::StackName} \
             --region ${AWS::Region} \
             --resource Server \
             --configsets application_installation
-
-          echo "# $(date) Start and enable NGINX (package default site on port 80)..."
-          systemctl enable nginx
-          systemctl start nginx
 
           /opt/aws/bin/cfn-signal -e $? \
             --stack ${AWS::StackName} \
@@ -131,19 +166,9 @@ Resources:
 
 Outputs:
   TerminalURL:
-    Description: Open a Session Manager terminal on this instance
+    Description: Follow this URL to open a terminal on the server
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${Server}?region=${AWS::Region}
   SsmCommand:
     Description: AWS CLI SSM command to connect to the instance
     Value: !Sub |
       aws ssm start-session --target ${Server}
-
-  ServerURL:
-    Description: NGINX default welcome page (HTTP on port 80)
-    Value: !Sub http://${Server.PublicDnsName}/
-
-  SecurityGroupId:
-    Description: Security group for this instance (allows inbound TCP 80)
-    Value: !GetAtt SecurityGroup.GroupId
-    Export:
-      Name: !Sub ${AWS::StackName}-SecurityGroupId
